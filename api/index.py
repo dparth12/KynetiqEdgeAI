@@ -555,13 +555,939 @@
 #     print(f"Model: {MODEL}")
 #     app.run(host="0.0.0.0", port=8000, debug=True)
 
+# """
+# AI-Powered FMS Squat Analysis API - OpenAI GPT Version
+# File: api/index.py (Vercel deployment structure)
+
+# Features intelligent phase-based frame sampling using pose detection metadata.
+# Samples frames at key squat phases (start, descent, bottom, ascent, end) rather
+# than uniform sampling for better analysis with fewer frames.
+# """
+
+# import os
+# import base64
+# import tempfile
+# from flask import Flask, request, jsonify
+# from flask_cors import CORS
+# from openai import OpenAI
+# import json
+# from datetime import datetime
+# from typing import Dict, Optional, List, Tuple
+
+# # ============================================================
+# # CONFIG & SETUP
+# # ============================================================
+# MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+
+# # Configure OpenAI API
+# client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+# # Frame extraction settings
+# DEFAULT_FRAME_COUNT = 5
+# MAX_FRAME_DIMENSION = 768  # Resize frames to this max dimension
+# JPEG_QUALITY = 75
+
+
+# # ============================================================
+# # INTELLIGENT FRAME EXTRACTION
+# # ============================================================
+
+# def get_video_info(video_path: str) -> Tuple[float, float, int]:
+#     """Get video duration, FPS, and total frame count."""
+#     import cv2
+#     cap = cv2.VideoCapture(video_path)
+#     fps = cap.get(cv2.CAP_PROP_FPS)
+#     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#     duration = total_frames / fps if fps > 0 else 0
+#     cap.release()
+#     return duration, fps, total_frames
+
+
+# def calculate_phase_timestamps(
+#     duration: float,
+#     pose_data: Optional[Dict] = None
+# ) -> List[float]:
+#     """
+#     Calculate optimal timestamps to sample based on squat phases.
+    
+#     If pose_data is available, uses the deepest point as anchor.
+#     Otherwise, estimates phases based on typical squat timing.
+    
+#     Returns list of timestamps (in seconds) to sample.
+#     """
+#     timestamps = []
+    
+#     if pose_data and pose_data.get('time_at_deepest_point_seconds'):
+#         # We have pose data - use deepest point as anchor
+#         deepest_time = pose_data['time_at_deepest_point_seconds']
+        
+#         # Estimate squat phases relative to deepest point
+#         # Typical squat: ~1-1.5s descent, pause at bottom, ~1-1.5s ascent
+        
+#         # 1. Start position (beginning of video or 0.3s in)
+#         start_time = min(0.3, duration * 0.05)
+#         timestamps.append(start_time)
+        
+#         # 2. Mid-descent (halfway between start and bottom)
+#         mid_descent = (start_time + deepest_time) / 2
+#         timestamps.append(mid_descent)
+        
+#         # 3. Bottom of squat (the most important frame!)
+#         timestamps.append(deepest_time)
+        
+#         # 4. Just after bottom (catch any compensation on the way up)
+#         post_bottom = min(deepest_time + 0.3, duration - 0.2)
+#         if post_bottom > deepest_time:
+#             timestamps.append(post_bottom)
+        
+#         # 5. Mid-ascent
+#         mid_ascent = (deepest_time + duration) / 2
+#         if mid_ascent > post_bottom + 0.2:
+#             timestamps.append(mid_ascent)
+        
+#         # 6. End/lockout position
+#         end_time = max(duration - 0.3, duration * 0.95)
+#         if end_time > timestamps[-1] + 0.2:
+#             timestamps.append(end_time)
+        
+#         print(f"  Phase-based sampling (deepest @ {deepest_time:.2f}s):")
+#         print(f"    Timestamps: {[f'{t:.2f}s' for t in timestamps]}")
+        
+#     else:
+#         # No pose data - use estimated phases for typical squat
+#         # Assume: 10% start, 30% mid-descent, 50% bottom, 70% mid-ascent, 90% end
+#         phase_percentages = [0.10, 0.30, 0.50, 0.70, 0.90]
+#         timestamps = [duration * p for p in phase_percentages]
+#         print(f"  Uniform phase sampling (no pose data):")
+#         print(f"    Timestamps: {[f'{t:.2f}s' for t in timestamps]}")
+    
+#     # Ensure timestamps are within bounds and sorted
+#     timestamps = sorted(set(max(0, min(t, duration - 0.1)) for t in timestamps))
+    
+#     return timestamps
+
+
+# def extract_frame_at_timestamp(
+#     cap,  # cv2.VideoCapture object
+#     timestamp: float,
+#     fps: float
+# ) -> Optional[str]:
+#     """Extract a single frame at the given timestamp, return as base64 JPEG."""
+#     import cv2
+    
+#     frame_number = int(timestamp * fps)
+#     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+#     ret, frame = cap.read()
+    
+#     if not ret:
+#         return None
+    
+#     # Resize frame to reduce payload size
+#     height, width = frame.shape[:2]
+#     if max(height, width) > MAX_FRAME_DIMENSION:
+#         scale = MAX_FRAME_DIMENSION / max(height, width)
+#         new_width = int(width * scale)
+#         new_height = int(height * scale)
+#         frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    
+#     # Encode as JPEG
+#     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+#     return base64.b64encode(buffer).decode('utf-8')
+
+
+# def extract_frames_intelligent(
+#     video_base64: str,
+#     pose_data: Optional[Dict] = None,
+#     num_frames: int = DEFAULT_FRAME_COUNT
+# ) -> Tuple[List[str], List[float]]:
+#     """
+#     Extract frames using intelligent phase-based sampling.
+    
+#     Returns:
+#         - List of base64-encoded JPEG frames
+#         - List of timestamps where frames were extracted
+#     """
+#     import cv2
+    
+#     # Decode base64 video to bytes
+#     video_bytes = base64.b64decode(video_base64)
+    
+#     # Write to temp file
+#     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
+#         tmp_file.write(video_bytes)
+#         tmp_path = tmp_file.name
+    
+#     try:
+#         # Get video info
+#         duration, fps, total_frames = get_video_info(tmp_path)
+#         print(f"  Video: {duration:.2f}s, {fps:.1f} FPS, {total_frames} frames")
+        
+#         if total_frames == 0 or fps == 0:
+#             raise ValueError("Could not read video properties")
+        
+#         # Calculate phase-based timestamps
+#         timestamps = calculate_phase_timestamps(duration, pose_data)
+        
+#         # If we got more timestamps than requested, prioritize key moments
+#         if len(timestamps) > num_frames:
+#             # Always keep: start, bottom (middle), end
+#             # Then fill in others
+#             if pose_data and pose_data.get('time_at_deepest_point_seconds'):
+#                 deepest = pose_data['time_at_deepest_point_seconds']
+#                 # Keep start, deepest, end, then closest to those
+#                 priority = [timestamps[0], deepest, timestamps[-1]]
+#                 remaining = [t for t in timestamps if t not in priority]
+#                 # Add remaining until we hit num_frames
+#                 while len(priority) < num_frames and remaining:
+#                     priority.append(remaining.pop(0))
+#                 timestamps = sorted(priority)
+#             else:
+#                 # Uniform selection from calculated timestamps
+#                 step = len(timestamps) / num_frames
+#                 indices = [int(i * step) for i in range(num_frames)]
+#                 timestamps = [timestamps[i] for i in indices]
+        
+#         # Extract frames at calculated timestamps
+#         cap = cv2.VideoCapture(tmp_path)
+#         frames = []
+#         extracted_timestamps = []
+        
+#         for ts in timestamps:
+#             frame_b64 = extract_frame_at_timestamp(cap, ts, fps)
+#             if frame_b64:
+#                 frames.append(frame_b64)
+#                 extracted_timestamps.append(ts)
+        
+#         cap.release()
+        
+#         print(f"  Extracted {len(frames)} frames at: {[f'{t:.2f}s' for t in extracted_timestamps]}")
+        
+#         return frames, extracted_timestamps
+        
+#     finally:
+#         os.unlink(tmp_path)
+
+
+# def extract_frames_uniform(
+#     video_base64: str,
+#     num_frames: int = DEFAULT_FRAME_COUNT
+# ) -> Tuple[List[str], List[float]]:
+#     """
+#     Fallback: Extract frames uniformly distributed across the video.
+#     Used when intelligent extraction fails or for non-squat content.
+#     """
+#     import cv2
+    
+#     video_bytes = base64.b64decode(video_base64)
+    
+#     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
+#         tmp_file.write(video_bytes)
+#         tmp_path = tmp_file.name
+    
+#     try:
+#         cap = cv2.VideoCapture(tmp_path)
+#         fps = cap.get(cv2.CAP_PROP_FPS)
+#         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#         duration = total_frames / fps if fps > 0 else 0
+        
+#         if total_frames == 0:
+#             raise ValueError("Could not read video frames")
+        
+#         # Calculate uniform frame indices
+#         frame_indices = [int(i * total_frames / (num_frames + 1)) for i in range(1, num_frames + 1)]
+        
+#         frames = []
+#         timestamps = []
+        
+#         for idx in frame_indices:
+#             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+#             ret, frame = cap.read()
+#             if ret:
+#                 # Resize
+#                 height, width = frame.shape[:2]
+#                 if max(height, width) > MAX_FRAME_DIMENSION:
+#                     scale = MAX_FRAME_DIMENSION / max(height, width)
+#                     frame = cv2.resize(frame, (int(width * scale), int(height * scale)))
+                
+#                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+#                 frames.append(base64.b64encode(buffer).decode('utf-8'))
+#                 timestamps.append(idx / fps)
+        
+#         cap.release()
+#         return frames, timestamps
+        
+#     finally:
+#         os.unlink(tmp_path)
+
+
+# # ============================================================
+# # FMS SQUAT ANALYSIS PROMPT
+# # ============================================================
+
+# def build_analysis_prompt(
+#     pose_data: Optional[Dict] = None,
+#     frame_timestamps: Optional[List[float]] = None
+# ) -> str:
+#     """Build the analysis prompt with pose data and frame context."""
+    
+#     base_prompt = """
+# You are an expert movement analyst and physical therapist specializing in Functional Movement Screening (FMS). 
+# Analyze these overhead deep squat images (key frames extracted from video) and provide a detailed assessment.
+
+# ## Your Role
+# You are working alongside a pose detection system (QuickPose SDK) that tracks joint positions in real-time.
+# The pose detection system provides ACCURATE data for:
+# - Knee angle measurements
+# - Whether squat depth was reached (below parallel)
+# - Number of squats performed
+
+# Your job is to analyze what the pose detection CANNOT reliably capture:
+# 1. **Torso position** - Forward lean angle, uprightness
+# 2. **Heel contact** - Whether heels lift off the ground
+# 3. **Knee tracking** - Valgus (inward collapse) or varus (outward bow)
+# 4. **Arm/overhead position** - If arms are maintained overhead
+# 5. **Balance & control** - Stability throughout movement
+# 6. **Overall movement quality** - Smoothness, hesitation, compensation patterns
+
+# ## Frame Context
+# """
+
+#     # Add frame timing context
+#     if frame_timestamps:
+#         base_prompt += f"""
+# The images are KEY FRAMES extracted at specific phases of the squat:
+# - Frames provided at: {[f'{t:.2f}s' for t in frame_timestamps]}
+# - These capture: start position → descent → BOTTOM (deepest point) → ascent → end
+# - Pay special attention to the frame at the DEEPEST point for compensation analysis
+# """
+#     else:
+#         base_prompt += """
+# The images are frames extracted from a squat video showing the movement progression.
+# """
+
+#     base_prompt += """
+# - The images may include a SKELETON OVERLAY showing joint positions
+# - The person is positioned in a SIDE/PROFILE VIEW for squat assessment
+# - Analyze the PROGRESSION across frames to assess movement quality
+# """
+
+#     if pose_data:
+#         pose_context = f"""
+
+# ## POSE DETECTION DATA (from QuickPose SDK - TRUST THIS DATA)
+# The following measurements were captured by the pose detection system during recording:
+
+# **Knee Angle Data:**
+# - Minimum knee angle reached: {pose_data.get('min_knee_angle', 'N/A')}°
+# - Maximum knee angle (standing): {pose_data.get('max_knee_angle', 'N/A')}°
+# - Knee angle at deepest point: {pose_data.get('knee_angle_at_deepest_point', 'N/A')}°
+
+# **Depth Assessment:**
+# - Depth reached below parallel (hip below knee): {"✅ YES" if pose_data.get('depth_reached_below_parallel') else "❌ NO"}
+# - Good depth reached (knee angle < 100°): {"✅ YES" if pose_data.get('good_depth_reached') else "❌ NO"}
+
+# **Movement Data:**
+# - Squats detected: {pose_data.get('squats_detected', 'N/A')}
+# - Person detection rate: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
+# - Time at deepest point: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s into recording
+
+# **Real-time Feedback Shown:**
+# {', '.join(pose_data.get('feedback_during_recording', ['No feedback recorded']))}
+
+# ⚠️ IMPORTANT: The depth and knee angle data above is MEASURED by sensors. 
+# Use this as GROUND TRUTH for scoring depth. Your visual analysis should CONFIRM 
+# or provide context, not contradict the sensor data unless you see a clear discrepancy.
+# """
+#         base_prompt += pose_context
+#     else:
+#         base_prompt += """
+
+# ## Note
+# No pose detection data was provided. Base your entire assessment on visual analysis only.
+# """
+
+#     scoring_criteria = """
+
+# ## FMS Scoring Criteria
+
+# **Score 3 (Optimal):**
+# - Thighs reach below parallel (hip crease below knee) — USE POSE DATA FOR THIS
+# - Torso and tibia remain parallel (minimal forward lean < 15°) — YOU ASSESS THIS
+# - Heels stay flat on the ground throughout movement — YOU ASSESS THIS
+# - Knees track over feet with no valgus/varus collapse — YOU ASSESS THIS
+# - Arms maintained overhead without dropping forward — YOU ASSESS THIS (if visible)
+# - Smooth, controlled movement throughout — YOU ASSESS THIS
+
+# **Score 2 (Compensated):**
+# - Achieves depth (USE POSE DATA) but with ONE OR MORE compensations YOU observe:
+#   - Heels lift off the ground
+#   - Torso leans forward >15-20° from vertical
+#   - Mild knee valgus or varus
+#   - Arms drop forward from overhead position
+#   - Some loss of balance or control
+
+# **Score 1 (Dysfunctional):**
+# - Cannot reach parallel depth (POSE DATA shows min_knee_angle > 100°)
+# - OR major compensations even if depth is reached:
+#   - Severe forward lean (>30°)
+#   - Complete loss of heel contact
+#   - Significant knee valgus/varus
+#   - Unable to control the movement
+#   - Multiple major compensations together
+
+# **Score 0 (Pain):**
+# - ONLY if user explicitly reported pain (will be indicated if true)
+
+# ## Scoring Decision Tree
+
+# 1. First, check POSE DATA for depth:
+#    - If min_knee_angle < 90° → Depth achieved (potential for Score 3)
+#    - If min_knee_angle 90-100° → Good depth (potential for Score 2-3)
+#    - If min_knee_angle > 100° → Insufficient depth (likely Score 1-2)
+
+# 2. Then, assess YOUR observations:
+#    - No compensations visible → Maintain or upgrade score
+#    - Minor compensations (1-2 small issues) → Score 2
+#    - Major compensations (multiple issues or severe) → Score 1
+
+# 3. Final score = min(depth_score, compensation_score)
+# """
+
+#     response_format = """
+
+# ## Required Response Format (JSON)
+
+# {
+#   "score": <0-3>,
+#   "classification": "<Optimal|Compensated|Dysfunctional|Pain>",
+#   "pose_data_alignment": {
+#     "depth_confirmed": <true if your visual observation aligns with pose data depth>,
+#     "discrepancy_notes": "<any discrepancies between pose data and visual observation, or 'None'>"
+#   },
+#   "observations": {
+#     "depth": "<describe depth - REFERENCE THE POSE DATA knee angle, confirm what you see>",
+#     "torso": "<YOUR assessment of torso angle, estimate degrees of forward lean>",
+#     "heels": "<YOUR assessment - flat, lifting, or cannot determine from angle>",
+#     "knees": "<YOUR assessment - tracking over feet, valgus, varus, or cannot see>",
+#     "arms": "<YOUR assessment - overhead maintained, dropped, or not visible>"
+#   },
+#   "compensations_detected": [
+#     "<specific compensation you VISUALLY observed>",
+#     "<another compensation if any>"
+#   ],
+#   "strengths": [
+#     "<specific thing done well>",
+#     "<another strength>"
+#   ],
+#   "improvements": [
+#     "<actionable suggestion based on YOUR observations>",
+#     "<another suggestion>"
+#   ],
+#   "mobility_focus_areas": [
+#     "<body area needing mobility work based on compensations>",
+#     "<another area if applicable>"
+#   ],
+#   "summary": "<2-3 sentences: Reference the pose data depth, explain YOUR visual observations about form, justify the score>"
+# }
+
+# ## CRITICAL RULES
+# 1. TRUST the pose detection data for depth/knee angle - it's sensor-measured
+# 2. YOUR job is to assess what sensors CAN'T see: torso, heels, knee valgus, arms, balance
+# 3. If pose data says depth was reached but you see major compensations, score accordingly
+# 4. If pose data says depth NOT reached, that alone warrants Score 1-2 even with good form
+# 5. Be SPECIFIC about what YOU observe vs what the POSE DATA reports
+# 6. Output ONLY valid JSON
+
+# Respond with ONLY the JSON object.
+# """
+
+#     return base_prompt + scoring_criteria + response_format
+
+
+# # ============================================================
+# # AI ANALYSIS FUNCTIONS
+# # ============================================================
+
+# def analyze_with_gpt(
+#     images_base64: List[str],
+#     reported_pain: bool = False,
+#     pose_detection_data: Optional[Dict] = None,
+#     frame_timestamps: Optional[List[float]] = None
+# ) -> Dict:
+#     """Analyze squat images using OpenAI GPT-4o Vision API."""
+#     try:
+#         # Build the prompt with frame context
+#         prompt = build_analysis_prompt(pose_detection_data, frame_timestamps)
+        
+#         if reported_pain:
+#             prompt += "\n\n⚠️ USER REPORTED PAIN: The user has indicated they experienced pain during this movement. The score MUST be 0 (Pain) regardless of movement quality observed."
+        
+#         # Build message content with multiple images
+#         content = [{"type": "text", "text": prompt}]
+        
+#         for i, img_base64 in enumerate(images_base64):
+#             # Add frame label if we have timestamps
+#             if frame_timestamps and i < len(frame_timestamps):
+#                 ts = frame_timestamps[i]
+#                 # Identify if this is the "bottom" frame
+#                 if pose_detection_data and pose_detection_data.get('time_at_deepest_point_seconds'):
+#                     deepest = pose_detection_data['time_at_deepest_point_seconds']
+#                     if abs(ts - deepest) < 0.5:
+#                         content.append({
+#                             "type": "text",
+#                             "text": f"[Frame {i+1} @ {ts:.2f}s - DEEPEST POINT - analyze compensations here]"
+#                         })
+#                     else:
+#                         content.append({
+#                             "type": "text", 
+#                             "text": f"[Frame {i+1} @ {ts:.2f}s]"
+#                         })
+            
+#             content.append({
+#                 "type": "image_url",
+#                 "image_url": {
+#                     "url": f"data:image/jpeg;base64,{img_base64}",
+#                     "detail": "high"
+#                 }
+#             })
+        
+#         # Log what we're sending
+#         print(f"Analyzing {len(images_base64)} frames with GPT-4o")
+#         if pose_detection_data:
+#             print(f"  - Min knee angle: {pose_detection_data.get('min_knee_angle')}°")
+#             print(f"  - Depth reached: {pose_detection_data.get('depth_reached_below_parallel')}")
+#             print(f"  - Deepest point: {pose_detection_data.get('time_at_deepest_point_seconds')}s")
+        
+#         # Call OpenAI API
+#         response = client.chat.completions.create(
+#             model=MODEL,
+#             messages=[
+#                 {
+#                     "role": "user",
+#                     "content": content
+#                 }
+#             ],
+#             max_tokens=2000,
+#             temperature=0.3
+#         )
+        
+#         response_text = response.choices[0].message.content.strip()
+        
+#         # Clean up markdown formatting
+#         if '```' in response_text:
+#             lines = response_text.split('\n')
+#             json_lines = []
+#             in_json = False
+#             for line in lines:
+#                 if '```json' in line:
+#                     in_json = True
+#                     continue
+#                 elif '```' in line and in_json:
+#                     in_json = False
+#                     continue
+#                 if in_json:
+#                     json_lines.append(line)
+#             if json_lines:
+#                 response_text = '\n'.join(json_lines)
+        
+#         # Extract JSON
+#         if not response_text.startswith('{'):
+#             start_idx = response_text.find('{')
+#             end_idx = response_text.rfind('}')
+#             if start_idx != -1 and end_idx != -1:
+#                 response_text = response_text[start_idx:end_idx + 1]
+        
+#         # Parse JSON response
+#         try:
+#             analysis_result = json.loads(response_text)
+            
+#             # Validate required fields
+#             required_fields = {
+#                 "score": None,
+#                 "classification": "Unknown",
+#                 "observations": {
+#                     "depth": "Not assessed",
+#                     "torso": "Not assessed",
+#                     "heels": "Not assessed",
+#                     "knees": "Not assessed",
+#                     "arms": "Not assessed"
+#                 },
+#                 "compensations_detected": [],
+#                 "strengths": [],
+#                 "improvements": [],
+#                 "mobility_focus_areas": [],
+#                 "summary": "Analysis completed"
+#             }
+            
+#             for field, default in required_fields.items():
+#                 if field not in analysis_result:
+#                     analysis_result[field] = default
+#                 elif field == "observations" and isinstance(default, dict):
+#                     for obs_field, obs_default in default.items():
+#                         if obs_field not in analysis_result[field]:
+#                             analysis_result[field][obs_field] = obs_default
+            
+#             # Validate score
+#             if analysis_result.get("score") not in [0, 1, 2, 3]:
+#                 classification_map = {
+#                     "Optimal": 3,
+#                     "Compensated": 2,
+#                     "Dysfunctional": 1,
+#                     "Pain": 0
+#                 }
+#                 analysis_result["score"] = classification_map.get(
+#                     analysis_result.get("classification"), 
+#                     2
+#                 )
+            
+#             # Ensure classification matches score
+#             score_classification_map = {
+#                 3: "Optimal",
+#                 2: "Compensated", 
+#                 1: "Dysfunctional",
+#                 0: "Pain"
+#             }
+#             if analysis_result.get("classification") not in score_classification_map.values():
+#                 analysis_result["classification"] = score_classification_map.get(
+#                     analysis_result["score"], 
+#                     "Compensated"
+#                 )
+            
+#             # Add metadata
+#             if pose_detection_data:
+#                 analysis_result["pose_detection_summary"] = {
+#                     "min_knee_angle": pose_detection_data.get("min_knee_angle"),
+#                     "depth_reached": pose_detection_data.get("depth_reached_below_parallel"),
+#                     "squats_counted": pose_detection_data.get("squats_detected")
+#                 }
+            
+#             return {
+#                 "success": True,
+#                 "analysis": analysis_result
+#             }
+            
+#         except json.JSONDecodeError as e:
+#             print(f"JSON parsing error: {e}")
+#             print(f"Response text: {response_text[:500]}...")
+#             return {
+#                 "success": False,
+#                 "error": "Failed to parse AI response as JSON",
+#                 "raw_response": response_text[:1000]
+#             }
+            
+#     except Exception as e:
+#         print(f"Error in analyze_with_gpt: {e}")
+#         import traceback
+#         traceback.print_exc()
+#         return {
+#             "success": False,
+#             "error": str(e)
+#         }
+
+
+# def analyze_squat_video(
+#     video_base64: str, 
+#     mime_type: str = "video/mp4", 
+#     reported_pain: bool = False,
+#     pose_detection_data: Optional[Dict] = None,
+#     num_frames: int = DEFAULT_FRAME_COUNT
+# ) -> Dict:
+#     """Analyze squat video with intelligent frame extraction."""
+#     try:
+#         print(f"=== Starting Analysis ===")
+#         print(f"  Requested frames: {num_frames}")
+#         print(f"  Pose data available: {pose_detection_data is not None}")
+        
+#         # Use intelligent extraction if we have pose data
+#         if pose_detection_data:
+#             frames, timestamps = extract_frames_intelligent(
+#                 video_base64, 
+#                 pose_detection_data, 
+#                 num_frames
+#             )
+#         else:
+#             # Fallback to uniform sampling
+#             print("  No pose data - using uniform sampling")
+#             frames, timestamps = extract_frames_uniform(video_base64, num_frames)
+        
+#         if not frames:
+#             return {
+#                 "success": False,
+#                 "error": "Failed to extract any frames from video"
+#             }
+        
+#         # Analyze with GPT-4o
+#         return analyze_with_gpt(
+#             frames, 
+#             reported_pain, 
+#             pose_detection_data,
+#             timestamps
+#         )
+        
+#     except Exception as e:
+#         print(f"Error in analyze_squat_video: {e}")
+#         import traceback
+#         traceback.print_exc()
+#         return {
+#             "success": False,
+#             "error": str(e)
+#         }
+
+
+# def analyze_single_image(
+#     image_base64: str,
+#     reported_pain: bool = False,
+#     pose_detection_data: Optional[Dict] = None
+# ) -> Dict:
+#     """Analyze a single image with GPT-4o."""
+#     return analyze_with_gpt([image_base64], reported_pain, pose_detection_data, None)
+
+
+# # ============================================================
+# # FLASK APP
+# # ============================================================
+
+# def create_app():
+#     app = Flask(__name__)
+#     CORS(app)
+    
+#     @app.get("/health")
+#     def health():
+#         return jsonify({
+#             "ok": True,
+#             "model": MODEL,
+#             "service": "fms_squat_analysis_poc",
+#             "timestamp": datetime.now().isoformat(),
+#             "version": "2.1-gpt-intelligent",
+#             "features": [
+#                 "pose_detection_integration",
+#                 "intelligent_phase_sampling",
+#                 "skeleton_overlay_detection",
+#                 "pain_reporting",
+#                 "sensor_data_fusion"
+#             ]
+#         })
+    
+#     @app.get("/test-connection")
+#     def test_connection():
+#         """
+#         Test OpenAI API connection with a simple completion request.
+#         Returns success status and model info.
+#         """
+#         try:
+#             # Make a minimal API call to verify connection
+#             response = client.chat.completions.create(
+#                 model=MODEL,
+#                 messages=[
+#                     {"role": "user", "content": "Say 'connected' and nothing else."}
+#                 ],
+#                 max_tokens=10,
+#                 temperature=0
+#             )
+            
+#             reply = response.choices[0].message.content.strip()
+            
+#             return jsonify({
+#                 "success": True,
+#                 "connected": True,
+#                 "model": MODEL,
+#                 "response": reply,
+#                 "timestamp": datetime.now().isoformat()
+#             })
+            
+#         except Exception as e:
+#             return jsonify({
+#                 "success": False,
+#                 "connected": False,
+#                 "model": MODEL,
+#                 "error": str(e),
+#                 "timestamp": datetime.now().isoformat()
+#             }), 500
+    
+#     @app.post("/analyze")
+#     def analyze():
+#         """
+#         Main video analysis endpoint with intelligent frame sampling
+        
+#         Expected JSON body:
+#         {
+#             "video": "<base64 encoded video>",
+#             "mime_type": "video/mp4",
+#             "reported_pain": false,
+#             "num_frames": 5,
+#             "pose_detection_data": {
+#                 "min_knee_angle": 85.5,
+#                 "max_knee_angle": 168.0,
+#                 "depth_reached_below_parallel": true,
+#                 "good_depth_reached": true,
+#                 "knee_angle_at_deepest_point": 85.5,
+#                 "time_at_deepest_point_seconds": 3.2,  // KEY: Used for intelligent sampling
+#                 "squats_detected": 3,
+#                 "person_detection_rate": 0.95,
+#                 "feedback_during_recording": ["Good depth!", "Excellent depth! 🔥"]
+#             }
+#         }
+        
+#         The API uses time_at_deepest_point_seconds to intelligently sample frames
+#         at key squat phases rather than uniform sampling.
+#         """
+#         try:
+#             data = request.get_json(force=True) or {}
+            
+#             video_base64 = data.get("video")
+#             if not video_base64:
+#                 return jsonify({
+#                     "success": False,
+#                     "error": "video (base64) is required",
+#                     "timestamp": datetime.now().isoformat()
+#                 }), 400
+            
+#             mime_type = data.get("mime_type", "video/mp4")
+#             reported_pain = data.get("reported_pain", False)
+#             pose_detection_data = data.get("pose_detection_data")
+#             num_frames = data.get("num_frames", DEFAULT_FRAME_COUNT)
+            
+#             print(f"=== Analyze Request ===")
+#             print(f"  mime_type: {mime_type}")
+#             print(f"  reported_pain: {reported_pain}")
+#             print(f"  video_length: {len(video_base64)} chars")
+#             print(f"  num_frames: {num_frames}")
+            
+#             if pose_detection_data:
+#                 print(f"  Pose data:")
+#                 print(f"    - min_knee_angle: {pose_detection_data.get('min_knee_angle')}")
+#                 print(f"    - depth_reached: {pose_detection_data.get('depth_reached_below_parallel')}")
+#                 print(f"    - deepest_point: {pose_detection_data.get('time_at_deepest_point_seconds')}s")
+            
+#             result = analyze_squat_video(
+#                 video_base64, 
+#                 mime_type, 
+#                 reported_pain,
+#                 pose_detection_data,
+#                 num_frames
+#             )
+            
+#             if result["success"]:
+#                 return jsonify({
+#                     "success": True,
+#                     "timestamp": datetime.now().isoformat(),
+#                     "result": result["analysis"],
+#                     "sampling_method": "intelligent_phase" if pose_detection_data else "uniform"
+#                 })
+#             else:
+#                 return jsonify({
+#                     "success": False,
+#                     "error": result.get("error", "Analysis failed"),
+#                     "raw_response": result.get("raw_response"),
+#                     "timestamp": datetime.now().isoformat()
+#                 }), 500
+                
+#         except Exception as e:
+#             print(f"Error in analyze endpoint: {e}")
+#             import traceback
+#             traceback.print_exc()
+            
+#             return jsonify({
+#                 "success": False,
+#                 "error": str(e),
+#                 "timestamp": datetime.now().isoformat()
+#             }), 500
+    
+#     @app.post("/analyze-frame")
+#     def analyze_frame():
+#         """Analyze a single frame/image"""
+#         try:
+#             data = request.get_json(force=True) or {}
+            
+#             image_base64 = data.get("image")
+#             if not image_base64:
+#                 return jsonify({
+#                     "success": False,
+#                     "error": "image (base64) is required",
+#                     "timestamp": datetime.now().isoformat()
+#                 }), 400
+            
+#             reported_pain = data.get("reported_pain", False)
+#             pose_detection_data = data.get("pose_detection_data")
+            
+#             result = analyze_single_image(
+#                 image_base64, 
+#                 reported_pain,
+#                 pose_detection_data
+#             )
+            
+#             if result["success"]:
+#                 return jsonify({
+#                     "success": True,
+#                     "timestamp": datetime.now().isoformat(),
+#                     "result": result["analysis"],
+#                     "note": "Analysis based on single frame - video analysis recommended"
+#                 })
+#             else:
+#                 return jsonify({
+#                     "success": False,
+#                     "error": result.get("error", "Analysis failed"),
+#                     "timestamp": datetime.now().isoformat()
+#                 }), 500
+                
+#         except Exception as e:
+#             print(f"Error in analyze-frame endpoint: {e}")
+#             import traceback
+#             traceback.print_exc()
+            
+#             return jsonify({
+#                 "success": False,
+#                 "error": str(e),
+#                 "timestamp": datetime.now().isoformat()
+#             }), 500
+    
+#     @app.get("/")
+#     def root():
+#         return jsonify({
+#             "service": "KynetiqEdge FMS Squat Analysis API",
+#             "version": "2.1-gpt-intelligent",
+#             "model": MODEL,
+#             "endpoints": {
+#                 "GET /health": "Health check and service info",
+#                 "GET /test-connection": "Test OpenAI API connection",
+#                 "POST /analyze": "Analyze squat video with intelligent phase sampling",
+#                 "POST /analyze-frame": "Analyze single image frame"
+#             },
+#             "intelligent_sampling": {
+#                 "description": "Uses pose detection metadata for smart frame selection",
+#                 "key_field": "pose_detection_data.time_at_deepest_point_seconds",
+#                 "phases_captured": ["start", "mid_descent", "bottom", "post_bottom", "mid_ascent", "end"],
+#                 "fallback": "Uniform sampling if pose data not provided"
+#             },
+#             "benefits": [
+#                 "Better analysis with fewer frames",
+#                 "Always captures the deepest point (where compensations are most visible)",
+#                 "Lower API cost compared to uniform high-count sampling",
+#                 "Phase-aware context provided to GPT for better assessment"
+#             ]
+#         })
+    
+#     return app
+
+
+# # ============================================================
+# # VERCEL DEPLOYMENT
+# # ============================================================
+# app = create_app()
+
+# if __name__ == "__main__":
+#     print("Starting FMS Squat Analysis API v2.1 (Intelligent Sampling)...")
+#     print(f"Model: {MODEL}")
+#     app.run(host="0.0.0.0", port=8000, debug=True)
 """
-AI-Powered FMS Squat Analysis API - OpenAI GPT Version
+AI-Powered FMS Analysis API - Multi-Exercise Version
 File: api/index.py (Vercel deployment structure)
 
-Features intelligent phase-based frame sampling using pose detection metadata.
-Samples frames at key squat phases (start, descent, bottom, ascent, end) rather
-than uniform sampling for better analysis with fewer frames.
+Supports all FMS exercises:
+- Lower: Functional Squat, Single Leg Balance (L/R), In-Line Lunge (L/R)
+- Upper: Shoulder Mobility, CKCUEST, Plank
+
+Each exercise has specific prompts and scoring criteria.
 """
 
 import os
@@ -578,22 +1504,283 @@ from typing import Dict, Optional, List, Tuple
 # CONFIG & SETUP
 # ============================================================
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
-
-# Configure OpenAI API
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# Frame extraction settings
 DEFAULT_FRAME_COUNT = 5
-MAX_FRAME_DIMENSION = 768  # Resize frames to this max dimension
+MAX_FRAME_DIMENSION = 768
 JPEG_QUALITY = 75
 
 
 # ============================================================
-# INTELLIGENT FRAME EXTRACTION
+# EXERCISE-SPECIFIC PROMPTS
+# ============================================================
+
+EXERCISE_PROMPTS = {
+    "functional_squat": {
+        "name": "Functional Squat",
+        "focus_areas": """
+Your job is to analyze what pose detection CANNOT reliably capture:
+1. **Torso position** - Forward lean angle, uprightness
+2. **Heel contact** - Whether heels lift off the ground
+3. **Knee tracking** - Valgus (inward collapse) or varus (outward bow)
+4. **Arm/overhead position** - If arms are maintained overhead
+5. **Balance & control** - Stability throughout movement
+6. **Squat depth** - Thighs relative to parallel
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Thighs below parallel
+- Torso and tibia parallel (minimal forward lean)
+- Heels flat on ground
+- Knees aligned over feet
+- No forward lean of arms/dowel
+
+**Score 2 (Compensated):**
+- Heels lift off ground
+- Torso leans forward >10-15°
+- Mild knee valgus/varus
+
+**Score 1 (Dysfunctional):**
+- Cannot reach parallel depth
+- Major loss of balance
+- Multiple compensations
+
+**Score 0 (Pain):**
+- Reports pain during movement
+""",
+        "observations_keys": ["depth", "torso", "heels", "knees", "arms"]
+    },
+    
+    "single_leg_balance_left": {
+        "name": "Single Leg Balance (Left Leg)",
+        "focus_areas": """
+Analyze the athlete standing on their LEFT leg:
+1. **Stability** - Amount of sway, wobble, or corrections
+2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
+3. **Trunk position** - Upright vs leaning
+4. **Duration quality** - Ability to maintain position
+5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Holds ≥20 seconds with minimal sway
+- Trunk upright
+- No hip drop >10°
+
+**Score 2 (Compensated):**
+- Holds 10-19 seconds
+- Mild sway or compensation
+
+**Score 1 (Dysfunctional):**
+- Holds <10 seconds
+- Frequent wobble
+- Touches down
+
+**Score 0 (Pain):**
+- Pain reported
+""",
+        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration"]
+    },
+    
+    "single_leg_balance_right": {
+        "name": "Single Leg Balance (Right Leg)",
+        "focus_areas": """
+Analyze the athlete standing on their RIGHT leg:
+1. **Stability** - Amount of sway, wobble, or corrections
+2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
+3. **Trunk position** - Upright vs leaning
+4. **Duration quality** - Ability to maintain position
+5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Holds ≥20 seconds with minimal sway
+- Trunk upright
+- No hip drop >10°
+
+**Score 2 (Compensated):**
+- Holds 10-19 seconds
+- Mild sway or compensation
+
+**Score 1 (Dysfunctional):**
+- Holds <10 seconds
+- Frequent wobble
+- Touches down
+
+**Score 0 (Pain):**
+- Pain reported
+""",
+        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration"]
+    },
+    
+    "inline_lunge_left": {
+        "name": "In-Line Lunge (Left Leg Forward)",
+        "focus_areas": """
+Analyze the lunge with LEFT leg forward:
+1. **Trunk position** - Upright vs leaning
+2. **Front heel contact** - Stays flat or lifts
+3. **Knee tracking** - Front knee over foot, no valgus/varus
+4. **Back knee position** - Touches behind front heel
+5. **Balance & control** - Stability throughout, no stepping off line
+6. **Alignment** - Feet stay on the line
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Trunk upright
+- Front heel flat
+- Back knee touches floor just behind front heel
+- No wobble
+- Knee tracks over foot
+
+**Score 2 (Compensated):**
+- Minor trunk lean
+- Heel lift
+- Mild valgus/varus drift
+
+**Score 1 (Dysfunctional):**
+- Cannot complete lunge under control
+- Loss of balance
+- Major compensations
+- Step off line
+
+**Score 0 (Pain):**
+- Reports pain during lunge
+""",
+        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance"]
+    },
+    
+    "inline_lunge_right": {
+        "name": "In-Line Lunge (Right Leg Forward)",
+        "focus_areas": """
+Analyze the lunge with RIGHT leg forward:
+1. **Trunk position** - Upright vs leaning
+2. **Front heel contact** - Stays flat or lifts
+3. **Knee tracking** - Front knee over foot, no valgus/varus
+4. **Back knee position** - Touches behind front heel
+5. **Balance & control** - Stability throughout, no stepping off line
+6. **Alignment** - Feet stay on the line
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Trunk upright
+- Front heel flat
+- Back knee touches floor just behind front heel
+- No wobble
+- Knee tracks over foot
+
+**Score 2 (Compensated):**
+- Minor trunk lean
+- Heel lift
+- Mild valgus/varus drift
+
+**Score 1 (Dysfunctional):**
+- Cannot complete lunge under control
+- Loss of balance
+- Major compensations
+- Step off line
+
+**Score 0 (Pain):**
+- Reports pain during lunge
+""",
+        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance"]
+    },
+    
+    "shoulder_mobility": {
+        "name": "Shoulder Mobility (IR/ER)",
+        "focus_areas": """
+Analyze shoulder internal/external rotation from BACK VIEW:
+1. **Fist distance** - How close the fists get to each other
+2. **Hand position** - Top hand reaching over shoulder, bottom hand reaching behind back
+3. **Compensations** - Trunk rotation, shoulder hiking, elbow position
+4. **Symmetry** - Compare if both sides tested
+5. **Range achieved** - Estimate in hand-lengths apart
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Fists touch (within 0 hand lengths)
+
+**Score 2 (Acceptable):**
+- Fists within 1 hand length (but not touching)
+
+**Score 1 (Dysfunctional):**
+- Fists farther apart than 1.5 hand lengths
+
+**Score 0 (Pain):**
+- Pain during attempt
+""",
+        "observations_keys": ["fistDistance", "shoulderRange", "overall"]
+    },
+    
+    "ckcuest": {
+        "name": "CKCUEST (Closed Kinetic Chain Upper Extremity Stability Test)",
+        "focus_areas": """
+Analyze the push-up position cross-body touches from FRONT VIEW:
+1. **Touch count** - Count valid cross-body touches (hand crosses midline to touch other hand)
+2. **Body position** - Straight line from head to heels
+3. **Hip rotation** - Should be minimal (<15°)
+4. **Control** - Stable base, no excessive swaying
+5. **Speed vs quality** - Fast but controlled touches
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- ≥21 valid touches in 15 seconds
+- Body maintains straight line
+- Minimal hip rotation
+
+**Score 2 (Acceptable):**
+- 18-20 valid touches in 15 seconds
+- Minor form breakdown
+
+**Score 1 (Dysfunctional):**
+- <18 valid touches in 15 seconds
+- Significant form breakdown
+
+**Score 0 (Pain/Unable):**
+- Unable to perform or pain reported
+""",
+        "observations_keys": ["touchCount", "bodyPosition", "hipRotation"]
+    },
+    
+    "plank": {
+        "name": "Plank",
+        "focus_areas": """
+Analyze the plank hold from SIDE VIEW:
+1. **Spine alignment** - Neutral spine, no excessive lordosis or kyphosis
+2. **Hip position** - No sagging or piking
+3. **Head position** - Neutral, in line with spine
+4. **Hold quality** - Steady vs shaking/compensating
+5. **Duration** - How long good form is maintained
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Holds ≥60 seconds
+- Spine neutral
+- No hip drop >10°
+- No rotation
+
+**Score 2 (Acceptable):**
+- Holds 30-59 seconds
+- Minor sway/mild compensation
+
+**Score 1 (Dysfunctional):**
+- Holds <30 seconds
+- Significant sway, hip drop, rotation
+- Needs multiple corrections
+
+**Score 0 (Pain):**
+- Pain reported
+- Cannot maintain position
+""",
+        "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "overall"]
+    }
+}
+
+
+# ============================================================
+# FRAME EXTRACTION
 # ============================================================
 
 def get_video_info(video_path: str) -> Tuple[float, float, int]:
-    """Get video duration, FPS, and total frame count."""
     import cv2
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -603,207 +1790,54 @@ def get_video_info(video_path: str) -> Tuple[float, float, int]:
     return duration, fps, total_frames
 
 
-def calculate_phase_timestamps(
-    duration: float,
-    pose_data: Optional[Dict] = None
-) -> List[float]:
-    """
-    Calculate optimal timestamps to sample based on squat phases.
-    
-    If pose_data is available, uses the deepest point as anchor.
-    Otherwise, estimates phases based on typical squat timing.
-    
-    Returns list of timestamps (in seconds) to sample.
-    """
-    timestamps = []
-    
-    if pose_data and pose_data.get('time_at_deepest_point_seconds'):
-        # We have pose data - use deepest point as anchor
-        deepest_time = pose_data['time_at_deepest_point_seconds']
-        
-        # Estimate squat phases relative to deepest point
-        # Typical squat: ~1-1.5s descent, pause at bottom, ~1-1.5s ascent
-        
-        # 1. Start position (beginning of video or 0.3s in)
-        start_time = min(0.3, duration * 0.05)
-        timestamps.append(start_time)
-        
-        # 2. Mid-descent (halfway between start and bottom)
-        mid_descent = (start_time + deepest_time) / 2
-        timestamps.append(mid_descent)
-        
-        # 3. Bottom of squat (the most important frame!)
-        timestamps.append(deepest_time)
-        
-        # 4. Just after bottom (catch any compensation on the way up)
-        post_bottom = min(deepest_time + 0.3, duration - 0.2)
-        if post_bottom > deepest_time:
-            timestamps.append(post_bottom)
-        
-        # 5. Mid-ascent
-        mid_ascent = (deepest_time + duration) / 2
-        if mid_ascent > post_bottom + 0.2:
-            timestamps.append(mid_ascent)
-        
-        # 6. End/lockout position
-        end_time = max(duration - 0.3, duration * 0.95)
-        if end_time > timestamps[-1] + 0.2:
-            timestamps.append(end_time)
-        
-        print(f"  Phase-based sampling (deepest @ {deepest_time:.2f}s):")
-        print(f"    Timestamps: {[f'{t:.2f}s' for t in timestamps]}")
-        
-    else:
-        # No pose data - use estimated phases for typical squat
-        # Assume: 10% start, 30% mid-descent, 50% bottom, 70% mid-ascent, 90% end
-        phase_percentages = [0.10, 0.30, 0.50, 0.70, 0.90]
-        timestamps = [duration * p for p in phase_percentages]
-        print(f"  Uniform phase sampling (no pose data):")
-        print(f"    Timestamps: {[f'{t:.2f}s' for t in timestamps]}")
-    
-    # Ensure timestamps are within bounds and sorted
-    timestamps = sorted(set(max(0, min(t, duration - 0.1)) for t in timestamps))
-    
-    return timestamps
-
-
-def extract_frame_at_timestamp(
-    cap,  # cv2.VideoCapture object
-    timestamp: float,
-    fps: float
-) -> Optional[str]:
-    """Extract a single frame at the given timestamp, return as base64 JPEG."""
-    import cv2
-    
-    frame_number = int(timestamp * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    ret, frame = cap.read()
-    
-    if not ret:
-        return None
-    
-    # Resize frame to reduce payload size
-    height, width = frame.shape[:2]
-    if max(height, width) > MAX_FRAME_DIMENSION:
-        scale = MAX_FRAME_DIMENSION / max(height, width)
-        new_width = int(width * scale)
-        new_height = int(height * scale)
-        frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-    
-    # Encode as JPEG
-    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-    return base64.b64encode(buffer).decode('utf-8')
-
-
-def extract_frames_intelligent(
+def extract_frames_from_video(
     video_base64: str,
     pose_data: Optional[Dict] = None,
     num_frames: int = DEFAULT_FRAME_COUNT
 ) -> Tuple[List[str], List[float]]:
-    """
-    Extract frames using intelligent phase-based sampling.
-    
-    Returns:
-        - List of base64-encoded JPEG frames
-        - List of timestamps where frames were extracted
-    """
+    """Extract frames with intelligent sampling if pose data available."""
     import cv2
     
-    # Decode base64 video to bytes
     video_bytes = base64.b64decode(video_base64)
     
-    # Write to temp file
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
         tmp_file.write(video_bytes)
         tmp_path = tmp_file.name
     
     try:
-        # Get video info
         duration, fps, total_frames = get_video_info(tmp_path)
-        print(f"  Video: {duration:.2f}s, {fps:.1f} FPS, {total_frames} frames")
         
         if total_frames == 0 or fps == 0:
             raise ValueError("Could not read video properties")
         
-        # Calculate phase-based timestamps
-        timestamps = calculate_phase_timestamps(duration, pose_data)
+        # Calculate timestamps
+        if pose_data and pose_data.get('time_at_deepest_point_seconds'):
+            deepest_time = pose_data['time_at_deepest_point_seconds']
+            timestamps = [
+                min(0.3, duration * 0.05),
+                (0.3 + deepest_time) / 2,
+                deepest_time,
+                min(deepest_time + 0.3, duration - 0.2),
+                (deepest_time + duration) / 2,
+                max(duration - 0.3, duration * 0.95)
+            ]
+        else:
+            # Uniform sampling
+            timestamps = [duration * p for p in [0.1, 0.3, 0.5, 0.7, 0.9]]
         
-        # If we got more timestamps than requested, prioritize key moments
-        if len(timestamps) > num_frames:
-            # Always keep: start, bottom (middle), end
-            # Then fill in others
-            if pose_data and pose_data.get('time_at_deepest_point_seconds'):
-                deepest = pose_data['time_at_deepest_point_seconds']
-                # Keep start, deepest, end, then closest to those
-                priority = [timestamps[0], deepest, timestamps[-1]]
-                remaining = [t for t in timestamps if t not in priority]
-                # Add remaining until we hit num_frames
-                while len(priority) < num_frames and remaining:
-                    priority.append(remaining.pop(0))
-                timestamps = sorted(priority)
-            else:
-                # Uniform selection from calculated timestamps
-                step = len(timestamps) / num_frames
-                indices = [int(i * step) for i in range(num_frames)]
-                timestamps = [timestamps[i] for i in indices]
+        timestamps = sorted(set(max(0, min(t, duration - 0.1)) for t in timestamps))[:num_frames]
         
-        # Extract frames at calculated timestamps
+        # Extract frames
         cap = cv2.VideoCapture(tmp_path)
         frames = []
         extracted_timestamps = []
         
         for ts in timestamps:
-            frame_b64 = extract_frame_at_timestamp(cap, ts, fps)
-            if frame_b64:
-                frames.append(frame_b64)
-                extracted_timestamps.append(ts)
-        
-        cap.release()
-        
-        print(f"  Extracted {len(frames)} frames at: {[f'{t:.2f}s' for t in extracted_timestamps]}")
-        
-        return frames, extracted_timestamps
-        
-    finally:
-        os.unlink(tmp_path)
-
-
-def extract_frames_uniform(
-    video_base64: str,
-    num_frames: int = DEFAULT_FRAME_COUNT
-) -> Tuple[List[str], List[float]]:
-    """
-    Fallback: Extract frames uniformly distributed across the video.
-    Used when intelligent extraction fails or for non-squat content.
-    """
-    import cv2
-    
-    video_bytes = base64.b64decode(video_base64)
-    
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
-        tmp_file.write(video_bytes)
-        tmp_path = tmp_file.name
-    
-    try:
-        cap = cv2.VideoCapture(tmp_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames / fps if fps > 0 else 0
-        
-        if total_frames == 0:
-            raise ValueError("Could not read video frames")
-        
-        # Calculate uniform frame indices
-        frame_indices = [int(i * total_frames / (num_frames + 1)) for i in range(1, num_frames + 1)]
-        
-        frames = []
-        timestamps = []
-        
-        for idx in frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            frame_number = int(ts * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             ret, frame = cap.read()
+            
             if ret:
-                # Resize
                 height, width = frame.shape[:2]
                 if max(height, width) > MAX_FRAME_DIMENSION:
                     scale = MAX_FRAME_DIMENSION / max(height, width)
@@ -811,269 +1845,185 @@ def extract_frames_uniform(
                 
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 frames.append(base64.b64encode(buffer).decode('utf-8'))
-                timestamps.append(idx / fps)
+                extracted_timestamps.append(ts)
         
         cap.release()
-        return frames, timestamps
+        return frames, extracted_timestamps
         
     finally:
         os.unlink(tmp_path)
 
 
 # ============================================================
-# FMS SQUAT ANALYSIS PROMPT
+# PROMPT BUILDING
 # ============================================================
 
-def build_analysis_prompt(
-    pose_data: Optional[Dict] = None,
-    frame_timestamps: Optional[List[float]] = None
+def build_exercise_prompt(
+    exercise_type: str,
+    exercise_name: str,
+    view_types: List[str],
+    pose_data_list: List[Dict],
+    scoring_criteria: Optional[Dict] = None
 ) -> str:
-    """Build the analysis prompt with pose data and frame context."""
+    """Build exercise-specific analysis prompt."""
     
-    base_prompt = """
-You are an expert movement analyst and physical therapist specializing in Functional Movement Screening (FMS). 
-Analyze these overhead deep squat images (key frames extracted from video) and provide a detailed assessment.
+    exercise_config = EXERCISE_PROMPTS.get(exercise_type, EXERCISE_PROMPTS["functional_squat"])
+    
+    prompt = f"""
+You are an expert movement analyst and physical therapist specializing in Functional Movement Screening (FMS).
+Analyze this {exercise_config['name']} assessment and provide a detailed evaluation.
 
-## Your Role
-You are working alongside a pose detection system (QuickPose SDK) that tracks joint positions in real-time.
-The pose detection system provides ACCURATE data for:
-- Knee angle measurements
-- Whether squat depth was reached (below parallel)
-- Number of squats performed
+## Exercise Being Assessed
+**{exercise_name}**
 
-Your job is to analyze what the pose detection CANNOT reliably capture:
-1. **Torso position** - Forward lean angle, uprightness
-2. **Heel contact** - Whether heels lift off the ground
-3. **Knee tracking** - Valgus (inward collapse) or varus (outward bow)
-4. **Arm/overhead position** - If arms are maintained overhead
-5. **Balance & control** - Stability throughout movement
-6. **Overall movement quality** - Smoothness, hesitation, compensation patterns
+## Camera Views Provided
+{', '.join([v.replace('_', ' ').title() for v in view_types])}
 
-## Frame Context
+## Your Analysis Focus
+{exercise_config['focus_areas']}
+
+## Scoring Criteria
+{exercise_config['scoring'] if not scoring_criteria else format_custom_scoring(scoring_criteria)}
 """
 
-    # Add frame timing context
-    if frame_timestamps:
-        base_prompt += f"""
-The images are KEY FRAMES extracted at specific phases of the squat:
-- Frames provided at: {[f'{t:.2f}s' for t in frame_timestamps]}
-- These capture: start position → descent → BOTTOM (deepest point) → ascent → end
-- Pay special attention to the frame at the DEEPEST point for compensation analysis
-"""
-    else:
-        base_prompt += """
-The images are frames extracted from a squat video showing the movement progression.
-"""
-
-    base_prompt += """
-- The images may include a SKELETON OVERLAY showing joint positions
-- The person is positioned in a SIDE/PROFILE VIEW for squat assessment
-- Analyze the PROGRESSION across frames to assess movement quality
+    # Add pose detection data if available
+    if pose_data_list:
+        prompt += "\n## POSE DETECTION DATA (from QuickPose SDK)\n"
+        for i, pose_data in enumerate(pose_data_list):
+            view_name = view_types[i] if i < len(view_types) else f"View {i+1}"
+            prompt += f"""
+**{view_name.replace('_', ' ').title()}:**
+- Min angle: {pose_data.get('min_knee_angle', 'N/A')}°
+- Max angle: {pose_data.get('max_knee_angle', 'N/A')}°
+- Key moment at: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s
+- Person detection: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
 """
 
-    if pose_data:
-        pose_context = f"""
-
-## POSE DETECTION DATA (from QuickPose SDK - TRUST THIS DATA)
-The following measurements were captured by the pose detection system during recording:
-
-**Knee Angle Data:**
-- Minimum knee angle reached: {pose_data.get('min_knee_angle', 'N/A')}°
-- Maximum knee angle (standing): {pose_data.get('max_knee_angle', 'N/A')}°
-- Knee angle at deepest point: {pose_data.get('knee_angle_at_deepest_point', 'N/A')}°
-
-**Depth Assessment:**
-- Depth reached below parallel (hip below knee): {"✅ YES" if pose_data.get('depth_reached_below_parallel') else "❌ NO"}
-- Good depth reached (knee angle < 100°): {"✅ YES" if pose_data.get('good_depth_reached') else "❌ NO"}
-
-**Movement Data:**
-- Squats detected: {pose_data.get('squats_detected', 'N/A')}
-- Person detection rate: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
-- Time at deepest point: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s into recording
-
-**Real-time Feedback Shown:**
-{', '.join(pose_data.get('feedback_during_recording', ['No feedback recorded']))}
-
-⚠️ IMPORTANT: The depth and knee angle data above is MEASURED by sensors. 
-Use this as GROUND TRUTH for scoring depth. Your visual analysis should CONFIRM 
-or provide context, not contradict the sensor data unless you see a clear discrepancy.
-"""
-        base_prompt += pose_context
-    else:
-        base_prompt += """
-
-## Note
-No pose detection data was provided. Base your entire assessment on visual analysis only.
-"""
-
-    scoring_criteria = """
-
-## FMS Scoring Criteria
-
-**Score 3 (Optimal):**
-- Thighs reach below parallel (hip crease below knee) — USE POSE DATA FOR THIS
-- Torso and tibia remain parallel (minimal forward lean < 15°) — YOU ASSESS THIS
-- Heels stay flat on the ground throughout movement — YOU ASSESS THIS
-- Knees track over feet with no valgus/varus collapse — YOU ASSESS THIS
-- Arms maintained overhead without dropping forward — YOU ASSESS THIS (if visible)
-- Smooth, controlled movement throughout — YOU ASSESS THIS
-
-**Score 2 (Compensated):**
-- Achieves depth (USE POSE DATA) but with ONE OR MORE compensations YOU observe:
-  - Heels lift off the ground
-  - Torso leans forward >15-20° from vertical
-  - Mild knee valgus or varus
-  - Arms drop forward from overhead position
-  - Some loss of balance or control
-
-**Score 1 (Dysfunctional):**
-- Cannot reach parallel depth (POSE DATA shows min_knee_angle > 100°)
-- OR major compensations even if depth is reached:
-  - Severe forward lean (>30°)
-  - Complete loss of heel contact
-  - Significant knee valgus/varus
-  - Unable to control the movement
-  - Multiple major compensations together
-
-**Score 0 (Pain):**
-- ONLY if user explicitly reported pain (will be indicated if true)
-
-## Scoring Decision Tree
-
-1. First, check POSE DATA for depth:
-   - If min_knee_angle < 90° → Depth achieved (potential for Score 3)
-   - If min_knee_angle 90-100° → Good depth (potential for Score 2-3)
-   - If min_knee_angle > 100° → Insufficient depth (likely Score 1-2)
-
-2. Then, assess YOUR observations:
-   - No compensations visible → Maintain or upgrade score
-   - Minor compensations (1-2 small issues) → Score 2
-   - Major compensations (multiple issues or severe) → Score 1
-
-3. Final score = min(depth_score, compensation_score)
-"""
-
-    response_format = """
+    # Build observations keys
+    obs_keys = exercise_config.get('observations_keys', ['overall'])
+    obs_format = ',\n    '.join([f'"{k}": "<your assessment>"' for k in obs_keys])
+    
+    prompt += f"""
 
 ## Required Response Format (JSON)
 
-{
+{{
   "score": <0-3>,
-  "classification": "<Optimal|Compensated|Dysfunctional|Pain>",
-  "pose_data_alignment": {
-    "depth_confirmed": <true if your visual observation aligns with pose data depth>,
-    "discrepancy_notes": "<any discrepancies between pose data and visual observation, or 'None'>"
-  },
-  "observations": {
-    "depth": "<describe depth - REFERENCE THE POSE DATA knee angle, confirm what you see>",
-    "torso": "<YOUR assessment of torso angle, estimate degrees of forward lean>",
-    "heels": "<YOUR assessment - flat, lifting, or cannot determine from angle>",
-    "knees": "<YOUR assessment - tracking over feet, valgus, varus, or cannot see>",
-    "arms": "<YOUR assessment - overhead maintained, dropped, or not visible>"
-  },
+  "classification": "<Optimal|Compensated|Acceptable|Dysfunctional|Pain>",
+  "observations": {{
+    {obs_format}
+  }},
   "compensations_detected": [
-    "<specific compensation you VISUALLY observed>",
-    "<another compensation if any>"
+    "<specific compensation observed>",
+    "<another if any>"
   ],
   "strengths": [
-    "<specific thing done well>",
-    "<another strength>"
+    "<what was done well>"
   ],
   "improvements": [
-    "<actionable suggestion based on YOUR observations>",
-    "<another suggestion>"
+    "<actionable suggestion>"
   ],
   "mobility_focus_areas": [
-    "<body area needing mobility work based on compensations>",
-    "<another area if applicable>"
+    "<body area needing work>"
   ],
-  "summary": "<2-3 sentences: Reference the pose data depth, explain YOUR visual observations about form, justify the score>"
-}
+  "exercise_specific_data": {{
+    // Include relevant data like touch_count for CKCUEST, hold_duration for plank/balance
+  }},
+  "summary": "<2-3 sentences summarizing the assessment and justifying the score>"
+}}
 
 ## CRITICAL RULES
-1. TRUST the pose detection data for depth/knee angle - it's sensor-measured
-2. YOUR job is to assess what sensors CAN'T see: torso, heels, knee valgus, arms, balance
-3. If pose data says depth was reached but you see major compensations, score accordingly
-4. If pose data says depth NOT reached, that alone warrants Score 1-2 even with good form
-5. Be SPECIFIC about what YOU observe vs what the POSE DATA reports
-6. Output ONLY valid JSON
+1. Score based on the specific criteria for {exercise_config['name']}
+2. Be specific about what you observe in each view
+3. If multiple views provided, synthesize observations from all views
+4. Output ONLY valid JSON
 
 Respond with ONLY the JSON object.
 """
+    
+    return prompt
 
-    return base_prompt + scoring_criteria + response_format
+
+def format_custom_scoring(scoring_criteria: Dict) -> str:
+    """Format custom scoring criteria from request."""
+    result = ""
+    for score, criteria in [("3", "score_3"), ("2", "score_2"), ("1", "score_1"), ("0", "score_0")]:
+        if criteria in scoring_criteria:
+            result += f"\n**Score {score}:**\n"
+            for c in scoring_criteria[criteria]:
+                result += f"- {c}\n"
+    return result
 
 
 # ============================================================
-# AI ANALYSIS FUNCTIONS
+# ANALYSIS FUNCTION
 # ============================================================
 
-def analyze_with_gpt(
-    images_base64: List[str],
+def analyze_exercise(
+    exercise_type: str,
+    exercise_name: str,
+    videos_base64: List[str],
+    view_types: List[str],
+    pose_data_list: List[Dict],
     reported_pain: bool = False,
-    pose_detection_data: Optional[Dict] = None,
-    frame_timestamps: Optional[List[float]] = None
+    scoring_criteria: Optional[Dict] = None
 ) -> Dict:
-    """Analyze squat images using OpenAI GPT-4o Vision API."""
+    """Analyze exercise video(s) using GPT-4o."""
     try:
-        # Build the prompt with frame context
-        prompt = build_analysis_prompt(pose_detection_data, frame_timestamps)
+        # Extract frames from each video
+        all_frames = []
+        all_timestamps = []
+        frame_view_labels = []
+        
+        for i, video_b64 in enumerate(videos_base64):
+            pose_data = pose_data_list[i] if i < len(pose_data_list) else None
+            frames, timestamps = extract_frames_from_video(video_b64, pose_data)
+            
+            view_label = view_types[i] if i < len(view_types) else f"view_{i+1}"
+            for j, (frame, ts) in enumerate(zip(frames, timestamps)):
+                all_frames.append(frame)
+                all_timestamps.append(ts)
+                frame_view_labels.append(f"{view_label} @ {ts:.2f}s")
+        
+        # Build prompt
+        prompt = build_exercise_prompt(
+            exercise_type,
+            exercise_name,
+            view_types,
+            pose_data_list,
+            scoring_criteria
+        )
         
         if reported_pain:
-            prompt += "\n\n⚠️ USER REPORTED PAIN: The user has indicated they experienced pain during this movement. The score MUST be 0 (Pain) regardless of movement quality observed."
+            prompt += "\n\n⚠️ USER REPORTED PAIN: Score MUST be 0 regardless of movement quality."
         
-        # Build message content with multiple images
+        # Build message content
         content = [{"type": "text", "text": prompt}]
         
-        for i, img_base64 in enumerate(images_base64):
-            # Add frame label if we have timestamps
-            if frame_timestamps and i < len(frame_timestamps):
-                ts = frame_timestamps[i]
-                # Identify if this is the "bottom" frame
-                if pose_detection_data and pose_detection_data.get('time_at_deepest_point_seconds'):
-                    deepest = pose_detection_data['time_at_deepest_point_seconds']
-                    if abs(ts - deepest) < 0.5:
-                        content.append({
-                            "type": "text",
-                            "text": f"[Frame {i+1} @ {ts:.2f}s - DEEPEST POINT - analyze compensations here]"
-                        })
-                    else:
-                        content.append({
-                            "type": "text", 
-                            "text": f"[Frame {i+1} @ {ts:.2f}s]"
-                        })
-            
+        for i, (frame_b64, label) in enumerate(zip(all_frames, frame_view_labels)):
+            content.append({
+                "type": "text",
+                "text": f"[Frame {i+1}: {label}]"
+            })
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/jpeg;base64,{img_base64}",
+                    "url": f"data:image/jpeg;base64,{frame_b64}",
                     "detail": "high"
                 }
             })
         
-        # Log what we're sending
-        print(f"Analyzing {len(images_base64)} frames with GPT-4o")
-        if pose_detection_data:
-            print(f"  - Min knee angle: {pose_detection_data.get('min_knee_angle')}°")
-            print(f"  - Depth reached: {pose_detection_data.get('depth_reached_below_parallel')}")
-            print(f"  - Deepest point: {pose_detection_data.get('time_at_deepest_point_seconds')}s")
-        
-        # Call OpenAI API
+        # Call GPT-4o
         response = client.chat.completions.create(
             model=MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
+            messages=[{"role": "user", "content": content}],
             max_tokens=2000,
             temperature=0.3
         )
         
         response_text = response.choices[0].message.content.strip()
         
-        # Clean up markdown formatting
+        # Clean up response
         if '```' in response_text:
             lines = response_text.split('\n')
             json_lines = []
@@ -1090,157 +2040,37 @@ def analyze_with_gpt(
             if json_lines:
                 response_text = '\n'.join(json_lines)
         
-        # Extract JSON
         if not response_text.startswith('{'):
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}')
             if start_idx != -1 and end_idx != -1:
                 response_text = response_text[start_idx:end_idx + 1]
         
-        # Parse JSON response
-        try:
-            analysis_result = json.loads(response_text)
-            
-            # Validate required fields
-            required_fields = {
-                "score": None,
-                "classification": "Unknown",
-                "observations": {
-                    "depth": "Not assessed",
-                    "torso": "Not assessed",
-                    "heels": "Not assessed",
-                    "knees": "Not assessed",
-                    "arms": "Not assessed"
-                },
-                "compensations_detected": [],
-                "strengths": [],
-                "improvements": [],
-                "mobility_focus_areas": [],
-                "summary": "Analysis completed"
-            }
-            
-            for field, default in required_fields.items():
-                if field not in analysis_result:
-                    analysis_result[field] = default
-                elif field == "observations" and isinstance(default, dict):
-                    for obs_field, obs_default in default.items():
-                        if obs_field not in analysis_result[field]:
-                            analysis_result[field][obs_field] = obs_default
-            
-            # Validate score
-            if analysis_result.get("score") not in [0, 1, 2, 3]:
-                classification_map = {
-                    "Optimal": 3,
-                    "Compensated": 2,
-                    "Dysfunctional": 1,
-                    "Pain": 0
-                }
-                analysis_result["score"] = classification_map.get(
-                    analysis_result.get("classification"), 
-                    2
-                )
-            
-            # Ensure classification matches score
-            score_classification_map = {
-                3: "Optimal",
-                2: "Compensated", 
-                1: "Dysfunctional",
-                0: "Pain"
-            }
-            if analysis_result.get("classification") not in score_classification_map.values():
-                analysis_result["classification"] = score_classification_map.get(
-                    analysis_result["score"], 
-                    "Compensated"
-                )
-            
-            # Add metadata
-            if pose_detection_data:
-                analysis_result["pose_detection_summary"] = {
-                    "min_knee_angle": pose_detection_data.get("min_knee_angle"),
-                    "depth_reached": pose_detection_data.get("depth_reached_below_parallel"),
-                    "squats_counted": pose_detection_data.get("squats_detected")
-                }
-            
-            return {
-                "success": True,
-                "analysis": analysis_result
-            }
-            
-        except json.JSONDecodeError as e:
-            print(f"JSON parsing error: {e}")
-            print(f"Response text: {response_text[:500]}...")
-            return {
-                "success": False,
-                "error": "Failed to parse AI response as JSON",
-                "raw_response": response_text[:1000]
-            }
-            
+        # Parse response
+        analysis_result = json.loads(response_text)
+        
+        # Validate score
+        if analysis_result.get("score") not in [0, 1, 2, 3]:
+            analysis_result["score"] = 2
+        
+        return {
+            "success": True,
+            "analysis": analysis_result
+        }
+        
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"Failed to parse AI response: {str(e)}",
+            "raw_response": response_text[:1000] if 'response_text' in locals() else None
+        }
     except Exception as e:
-        print(f"Error in analyze_with_gpt: {e}")
         import traceback
         traceback.print_exc()
         return {
             "success": False,
             "error": str(e)
         }
-
-
-def analyze_squat_video(
-    video_base64: str, 
-    mime_type: str = "video/mp4", 
-    reported_pain: bool = False,
-    pose_detection_data: Optional[Dict] = None,
-    num_frames: int = DEFAULT_FRAME_COUNT
-) -> Dict:
-    """Analyze squat video with intelligent frame extraction."""
-    try:
-        print(f"=== Starting Analysis ===")
-        print(f"  Requested frames: {num_frames}")
-        print(f"  Pose data available: {pose_detection_data is not None}")
-        
-        # Use intelligent extraction if we have pose data
-        if pose_detection_data:
-            frames, timestamps = extract_frames_intelligent(
-                video_base64, 
-                pose_detection_data, 
-                num_frames
-            )
-        else:
-            # Fallback to uniform sampling
-            print("  No pose data - using uniform sampling")
-            frames, timestamps = extract_frames_uniform(video_base64, num_frames)
-        
-        if not frames:
-            return {
-                "success": False,
-                "error": "Failed to extract any frames from video"
-            }
-        
-        # Analyze with GPT-4o
-        return analyze_with_gpt(
-            frames, 
-            reported_pain, 
-            pose_detection_data,
-            timestamps
-        )
-        
-    except Exception as e:
-        print(f"Error in analyze_squat_video: {e}")
-        import traceback
-        traceback.print_exc()
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def analyze_single_image(
-    image_base64: str,
-    reported_pain: bool = False,
-    pose_detection_data: Optional[Dict] = None
-) -> Dict:
-    """Analyze a single image with GPT-4o."""
-    return analyze_with_gpt([image_base64], reported_pain, pose_detection_data, None)
 
 
 # ============================================================
@@ -1256,45 +2086,28 @@ def create_app():
         return jsonify({
             "ok": True,
             "model": MODEL,
-            "service": "fms_squat_analysis_poc",
-            "timestamp": datetime.now().isoformat(),
-            "version": "2.1-gpt-intelligent",
-            "features": [
-                "pose_detection_integration",
-                "intelligent_phase_sampling",
-                "skeleton_overlay_detection",
-                "pain_reporting",
-                "sensor_data_fusion"
-            ]
+            "service": "fms_analysis_api",
+            "version": "3.0-multi-exercise",
+            "supported_exercises": list(EXERCISE_PROMPTS.keys()),
+            "timestamp": datetime.now().isoformat()
         })
     
     @app.get("/test-connection")
     def test_connection():
-        """
-        Test OpenAI API connection with a simple completion request.
-        Returns success status and model info.
-        """
         try:
-            # Make a minimal API call to verify connection
             response = client.chat.completions.create(
                 model=MODEL,
-                messages=[
-                    {"role": "user", "content": "Say 'connected' and nothing else."}
-                ],
+                messages=[{"role": "user", "content": "Say 'connected' and nothing else."}],
                 max_tokens=10,
                 temperature=0
             )
-            
-            reply = response.choices[0].message.content.strip()
-            
             return jsonify({
                 "success": True,
                 "connected": True,
                 "model": MODEL,
-                "response": reply,
+                "response": response.choices[0].message.content.strip(),
                 "timestamp": datetime.now().isoformat()
             })
-            
         except Exception as e:
             return jsonify({
                 "success": False,
@@ -1307,64 +2120,69 @@ def create_app():
     @app.post("/analyze")
     def analyze():
         """
-        Main video analysis endpoint with intelligent frame sampling
+        Multi-exercise analysis endpoint.
         
         Expected JSON body:
         {
-            "video": "<base64 encoded video>",
+            "exercise_type": "functional_squat",
+            "exercise_name": "Functional Squat",
+            "category": "lower_fms",
+            "videos": ["<base64>", "<base64>"],  // One per view
+            "view_types": ["front", "side"],
             "mime_type": "video/mp4",
             "reported_pain": false,
-            "num_frames": 5,
-            "pose_detection_data": {
-                "min_knee_angle": 85.5,
-                "max_knee_angle": 168.0,
-                "depth_reached_below_parallel": true,
-                "good_depth_reached": true,
-                "knee_angle_at_deepest_point": 85.5,
-                "time_at_deepest_point_seconds": 3.2,  // KEY: Used for intelligent sampling
-                "squats_detected": 3,
-                "person_detection_rate": 0.95,
-                "feedback_during_recording": ["Good depth!", "Excellent depth! 🔥"]
+            "pose_detection_data": [
+                { view 1 data },
+                { view 2 data }
+            ],
+            "scoring_criteria": {
+                "score_3": ["criteria 1", "criteria 2"],
+                "score_2": [...],
+                "score_1": [...],
+                "score_0": [...]
             }
         }
-        
-        The API uses time_at_deepest_point_seconds to intelligently sample frames
-        at key squat phases rather than uniform sampling.
         """
         try:
             data = request.get_json(force=True) or {}
             
-            video_base64 = data.get("video")
-            if not video_base64:
+            # Handle both single video and multi-video formats
+            if "videos" in data:
+                videos = data["videos"]
+            elif "video" in data:
+                videos = [data["video"]]
+            else:
                 return jsonify({
                     "success": False,
-                    "error": "video (base64) is required",
+                    "error": "videos or video (base64) is required",
                     "timestamp": datetime.now().isoformat()
                 }), 400
             
-            mime_type = data.get("mime_type", "video/mp4")
+            exercise_type = data.get("exercise_type", "functional_squat")
+            exercise_name = data.get("exercise_name", "Unknown Exercise")
+            view_types = data.get("view_types", ["front"])
             reported_pain = data.get("reported_pain", False)
-            pose_detection_data = data.get("pose_detection_data")
-            num_frames = data.get("num_frames", DEFAULT_FRAME_COUNT)
+            pose_data_list = data.get("pose_detection_data", [])
+            scoring_criteria = data.get("scoring_criteria")
+            
+            # Ensure pose_data_list is a list
+            if isinstance(pose_data_list, dict):
+                pose_data_list = [pose_data_list]
             
             print(f"=== Analyze Request ===")
-            print(f"  mime_type: {mime_type}")
-            print(f"  reported_pain: {reported_pain}")
-            print(f"  video_length: {len(video_base64)} chars")
-            print(f"  num_frames: {num_frames}")
+            print(f"  Exercise: {exercise_name} ({exercise_type})")
+            print(f"  Videos: {len(videos)}")
+            print(f"  Views: {view_types}")
+            print(f"  Pain reported: {reported_pain}")
             
-            if pose_detection_data:
-                print(f"  Pose data:")
-                print(f"    - min_knee_angle: {pose_detection_data.get('min_knee_angle')}")
-                print(f"    - depth_reached: {pose_detection_data.get('depth_reached_below_parallel')}")
-                print(f"    - deepest_point: {pose_detection_data.get('time_at_deepest_point_seconds')}s")
-            
-            result = analyze_squat_video(
-                video_base64, 
-                mime_type, 
-                reported_pain,
-                pose_detection_data,
-                num_frames
+            result = analyze_exercise(
+                exercise_type=exercise_type,
+                exercise_name=exercise_name,
+                videos_base64=videos,
+                view_types=view_types,
+                pose_data_list=pose_data_list,
+                reported_pain=reported_pain,
+                scoring_criteria=scoring_criteria
             )
             
             if result["success"]:
@@ -1372,7 +2190,7 @@ def create_app():
                     "success": True,
                     "timestamp": datetime.now().isoformat(),
                     "result": result["analysis"],
-                    "sampling_method": "intelligent_phase" if pose_detection_data else "uniform"
+                    "exercise_type": exercise_type
                 })
             else:
                 return jsonify({
@@ -1383,99 +2201,60 @@ def create_app():
                 }), 500
                 
         except Exception as e:
-            print(f"Error in analyze endpoint: {e}")
             import traceback
             traceback.print_exc()
-            
             return jsonify({
                 "success": False,
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }), 500
     
-    @app.post("/analyze-frame")
-    def analyze_frame():
-        """Analyze a single frame/image"""
-        try:
-            data = request.get_json(force=True) or {}
-            
-            image_base64 = data.get("image")
-            if not image_base64:
-                return jsonify({
-                    "success": False,
-                    "error": "image (base64) is required",
-                    "timestamp": datetime.now().isoformat()
-                }), 400
-            
-            reported_pain = data.get("reported_pain", False)
-            pose_detection_data = data.get("pose_detection_data")
-            
-            result = analyze_single_image(
-                image_base64, 
-                reported_pain,
-                pose_detection_data
-            )
-            
-            if result["success"]:
-                return jsonify({
-                    "success": True,
-                    "timestamp": datetime.now().isoformat(),
-                    "result": result["analysis"],
-                    "note": "Analysis based on single frame - video analysis recommended"
-                })
-            else:
-                return jsonify({
-                    "success": False,
-                    "error": result.get("error", "Analysis failed"),
-                    "timestamp": datetime.now().isoformat()
-                }), 500
-                
-        except Exception as e:
-            print(f"Error in analyze-frame endpoint: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            return jsonify({
-                "success": False,
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }), 500
+    @app.get("/exercises")
+    def list_exercises():
+        """List all supported exercises."""
+        return jsonify({
+            "exercises": [
+                {"id": k, "name": v["name"]}
+                for k, v in EXERCISE_PROMPTS.items()
+            ]
+        })
     
     @app.get("/")
     def root():
         return jsonify({
-            "service": "KynetiqEdge FMS Squat Analysis API",
-            "version": "2.1-gpt-intelligent",
+            "service": "KynetiqEdge FMS Analysis API",
+            "version": "3.0-multi-exercise",
             "model": MODEL,
             "endpoints": {
-                "GET /health": "Health check and service info",
-                "GET /test-connection": "Test OpenAI API connection",
-                "POST /analyze": "Analyze squat video with intelligent phase sampling",
-                "POST /analyze-frame": "Analyze single image frame"
+                "GET /": "API info",
+                "GET /health": "Health check",
+                "GET /test-connection": "Test OpenAI connection",
+                "GET /exercises": "List supported exercises",
+                "POST /analyze": "Analyze exercise video(s)"
             },
-            "intelligent_sampling": {
-                "description": "Uses pose detection metadata for smart frame selection",
-                "key_field": "pose_detection_data.time_at_deepest_point_seconds",
-                "phases_captured": ["start", "mid_descent", "bottom", "post_bottom", "mid_ascent", "end"],
-                "fallback": "Uniform sampling if pose data not provided"
-            },
-            "benefits": [
-                "Better analysis with fewer frames",
-                "Always captures the deepest point (where compensations are most visible)",
-                "Lower API cost compared to uniform high-count sampling",
-                "Phase-aware context provided to GPT for better assessment"
-            ]
+            "supported_exercises": {
+                "lower_fms": [
+                    "functional_squat",
+                    "single_leg_balance_left",
+                    "single_leg_balance_right",
+                    "inline_lunge_left",
+                    "inline_lunge_right"
+                ],
+                "upper_fms": [
+                    "shoulder_mobility",
+                    "ckcuest",
+                    "plank"
+                ]
+            }
         })
     
     return app
 
 
-# ============================================================
-# VERCEL DEPLOYMENT
-# ============================================================
 app = create_app()
 
 if __name__ == "__main__":
-    print("Starting FMS Squat Analysis API v2.1 (Intelligent Sampling)...")
+    print("Starting FMS Analysis API v3.0...")
     print(f"Model: {MODEL}")
+    print(f"Supported exercises: {list(EXERCISE_PROMPTS.keys())}")
     app.run(host="0.0.0.0", port=8000, debug=True)
