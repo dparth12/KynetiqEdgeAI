@@ -1484,10 +1484,8 @@ AI-Powered FMS Analysis API - Multi-Exercise Version
 File: api/index.py (Vercel deployment structure)
 
 Supports all FMS exercises:
-- Lower: Functional Squat, Single Leg Balance (L/R), In-Line Lunge (L/R)
-- Upper: Shoulder Mobility, CKCUEST, Plank
-
-Each exercise has specific prompts and scoring criteria.
+- Lower: Functional Squat, Single Leg Balance (combined L/R), In-Line Lunge (combined L/R), Plank
+- Upper: Shoulder Mobility, CKCUEST
 """
 
 import os
@@ -1518,6 +1516,7 @@ JPEG_QUALITY = 75
 EXERCISE_PROMPTS = {
     "functional_squat": {
         "name": "Functional Squat",
+        "category": "lower_fms",
         "focus_areas": """
 Your job is to analyze what pose detection CANNOT reliably capture:
 1. **Torso position** - Forward lean angle, uprightness
@@ -1551,198 +1550,100 @@ Your job is to analyze what pose detection CANNOT reliably capture:
         "observations_keys": ["depth", "torso", "heels", "knees", "arms"]
     },
     
-    "single_leg_balance_left": {
-        "name": "Single Leg Balance (Left Leg)",
+    "single_leg_balance": {
+        "name": "Single Leg Balance (Both Legs)",
+        "category": "lower_fms",
         "focus_areas": """
-Analyze the athlete standing on their LEFT leg:
+Analyze BOTH legs - you will see 4 views:
+1. Front view - Left leg standing
+2. Left side view - Left leg standing  
+3. Front view - Right leg standing
+4. Right side view - Right leg standing
+
+For each leg, assess:
 1. **Stability** - Amount of sway, wobble, or corrections
 2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
 3. **Trunk position** - Upright vs leaning
 4. **Duration quality** - Ability to maintain position
 5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+
+IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Holds ≥20 seconds with minimal sway
-- Trunk upright
-- No hip drop >10°
+- Holds ≥20 seconds on EACH leg with minimal sway
+- Trunk upright on both sides
+- No hip drop >10° on either side
+- Symmetrical performance between legs
 
 **Score 2 (Compensated):**
-- Holds 10-19 seconds
+- Holds 10-19 seconds on one or both legs
 - Mild sway or compensation
+- Minor asymmetry between sides
 
 **Score 1 (Dysfunctional):**
-- Holds <10 seconds
+- Holds <10 seconds on one or both legs
 - Frequent wobble
 - Touches down
+- Significant asymmetry between legs
 
 **Score 0 (Pain):**
 - Pain reported
 """,
-        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration"]
+        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration", "symmetry", "leftLeg", "rightLeg"]
     },
     
-    "single_leg_balance_right": {
-        "name": "Single Leg Balance (Right Leg)",
+    "inline_lunge": {
+        "name": "In-Line Lunge (Both Legs)",
+        "category": "lower_fms",
         "focus_areas": """
-Analyze the athlete standing on their RIGHT leg:
-1. **Stability** - Amount of sway, wobble, or corrections
-2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
-3. **Trunk position** - Upright vs leaning
-4. **Duration quality** - Ability to maintain position
-5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- Holds ≥20 seconds with minimal sway
-- Trunk upright
-- No hip drop >10°
+Analyze BOTH legs - you will see 4 views:
+1. Front view - Left leg forward
+2. Left side view - Left leg forward
+3. Front view - Right leg forward
+4. Right side view - Right leg forward
 
-**Score 2 (Compensated):**
-- Holds 10-19 seconds
-- Mild sway or compensation
-
-**Score 1 (Dysfunctional):**
-- Holds <10 seconds
-- Frequent wobble
-- Touches down
-
-**Score 0 (Pain):**
-- Pain reported
-""",
-        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration"]
-    },
-    
-    "inline_lunge_left": {
-        "name": "In-Line Lunge (Left Leg Forward)",
-        "focus_areas": """
-Analyze the lunge with LEFT leg forward:
+For each leg forward, assess:
 1. **Trunk position** - Upright vs leaning
 2. **Front heel contact** - Stays flat or lifts
 3. **Knee tracking** - Front knee over foot, no valgus/varus
 4. **Back knee position** - Touches behind front heel
 5. **Balance & control** - Stability throughout, no stepping off line
 6. **Alignment** - Feet stay on the line
+
+IMPORTANT: Compare LEFT vs RIGHT leg forward performance and note any asymmetries.
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Trunk upright
-- Front heel flat
-- Back knee touches floor just behind front heel
-- No wobble
+- Trunk upright on both sides
+- Front heel flat on both legs
+- Back knee touches floor behind front heel
+- No wobble on either side
 - Knee tracks over foot
+- Symmetrical performance
 
 **Score 2 (Compensated):**
-- Minor trunk lean
+- Minor trunk lean on one or both sides
 - Heel lift
 - Mild valgus/varus drift
+- Minor asymmetry between legs
 
 **Score 1 (Dysfunctional):**
 - Cannot complete lunge under control
-- Loss of balance
+- Loss of balance on one or both sides
 - Major compensations
 - Step off line
+- Significant asymmetry between legs
 
 **Score 0 (Pain):**
 - Reports pain during lunge
 """,
-        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance"]
-    },
-    
-    "inline_lunge_right": {
-        "name": "In-Line Lunge (Right Leg Forward)",
-        "focus_areas": """
-Analyze the lunge with RIGHT leg forward:
-1. **Trunk position** - Upright vs leaning
-2. **Front heel contact** - Stays flat or lifts
-3. **Knee tracking** - Front knee over foot, no valgus/varus
-4. **Back knee position** - Touches behind front heel
-5. **Balance & control** - Stability throughout, no stepping off line
-6. **Alignment** - Feet stay on the line
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- Trunk upright
-- Front heel flat
-- Back knee touches floor just behind front heel
-- No wobble
-- Knee tracks over foot
-
-**Score 2 (Compensated):**
-- Minor trunk lean
-- Heel lift
-- Mild valgus/varus drift
-
-**Score 1 (Dysfunctional):**
-- Cannot complete lunge under control
-- Loss of balance
-- Major compensations
-- Step off line
-
-**Score 0 (Pain):**
-- Reports pain during lunge
-""",
-        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance"]
-    },
-    
-    "shoulder_mobility": {
-        "name": "Shoulder Mobility (IR/ER)",
-        "focus_areas": """
-Analyze shoulder internal/external rotation from BACK VIEW:
-1. **Fist distance** - How close the fists get to each other
-2. **Hand position** - Top hand reaching over shoulder, bottom hand reaching behind back
-3. **Compensations** - Trunk rotation, shoulder hiking, elbow position
-4. **Symmetry** - Compare if both sides tested
-5. **Range achieved** - Estimate in hand-lengths apart
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- Fists touch (within 0 hand lengths)
-
-**Score 2 (Acceptable):**
-- Fists within 1 hand length (but not touching)
-
-**Score 1 (Dysfunctional):**
-- Fists farther apart than 1.5 hand lengths
-
-**Score 0 (Pain):**
-- Pain during attempt
-""",
-        "observations_keys": ["fistDistance", "shoulderRange", "overall"]
-    },
-    
-    "ckcuest": {
-        "name": "CKCUEST (Closed Kinetic Chain Upper Extremity Stability Test)",
-        "focus_areas": """
-Analyze the push-up position cross-body touches from FRONT VIEW:
-1. **Touch count** - Count valid cross-body touches (hand crosses midline to touch other hand)
-2. **Body position** - Straight line from head to heels
-3. **Hip rotation** - Should be minimal (<15°)
-4. **Control** - Stable base, no excessive swaying
-5. **Speed vs quality** - Fast but controlled touches
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- ≥21 valid touches in 15 seconds
-- Body maintains straight line
-- Minimal hip rotation
-
-**Score 2 (Acceptable):**
-- 18-20 valid touches in 15 seconds
-- Minor form breakdown
-
-**Score 1 (Dysfunctional):**
-- <18 valid touches in 15 seconds
-- Significant form breakdown
-
-**Score 0 (Pain/Unable):**
-- Unable to perform or pain reported
-""",
-        "observations_keys": ["touchCount", "bodyPosition", "hipRotation"]
+        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance", "symmetry", "leftLeg", "rightLeg"]
     },
     
     "plank": {
         "name": "Plank",
+        "category": "lower_fms",
         "focus_areas": """
 Analyze the plank hold from SIDE VIEW:
 1. **Spine alignment** - Neutral spine, no excessive lordosis or kyphosis
@@ -1772,6 +1673,64 @@ Analyze the plank hold from SIDE VIEW:
 - Cannot maintain position
 """,
         "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "overall"]
+    },
+    
+    "shoulder_mobility": {
+        "name": "Shoulder Mobility (IR/ER)",
+        "category": "upper_fms",
+        "focus_areas": """
+Analyze shoulder internal/external rotation from BACK VIEW:
+1. **Fist distance** - How close the fists get to each other
+2. **Hand position** - Top hand reaching over shoulder, bottom hand reaching behind back
+3. **Compensations** - Trunk rotation, shoulder hiking, elbow position
+4. **Symmetry** - Compare if both sides tested
+5. **Range achieved** - Estimate in hand-lengths apart
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Fists touch (within 0 hand lengths)
+
+**Score 2 (Acceptable):**
+- Fists within 1 hand length (but not touching)
+
+**Score 1 (Dysfunctional):**
+- Fists farther apart than 1.5 hand lengths
+
+**Score 0 (Pain):**
+- Pain during attempt
+""",
+        "observations_keys": ["fistDistance", "shoulderRange", "overall"]
+    },
+    
+    "ckcuest": {
+        "name": "CKCUEST (Closed Kinetic Chain Upper Extremity Stability Test)",
+        "category": "upper_fms",
+        "focus_areas": """
+Analyze the push-up position cross-body touches from FRONT VIEW:
+1. **Touch count** - Count valid cross-body touches (hand crosses midline to touch other hand)
+2. **Body position** - Straight line from head to heels
+3. **Hip rotation** - Should be minimal (<15°)
+4. **Control** - Stable base, no excessive swaying
+5. **Speed vs quality** - Fast but controlled touches
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- ≥21 valid touches in 15 seconds
+- Body maintains straight line
+- Minimal hip rotation
+
+**Score 2 (Acceptable):**
+- 18-20 valid touches in 15 seconds
+- Minor form breakdown
+
+**Score 1 (Dysfunctional):**
+- <18 valid touches in 15 seconds
+- Significant form breakdown
+
+**Score 0 (Pain/Unable):**
+- Unable to perform or pain reported
+""",
+        "observations_keys": ["touchCount", "bodyPosition", "hipRotation"]
     }
 }
 
@@ -1869,6 +1828,12 @@ def build_exercise_prompt(
     
     exercise_config = EXERCISE_PROMPTS.get(exercise_type, EXERCISE_PROMPTS["functional_squat"])
     
+    # Format view types for display
+    view_display = []
+    for v in view_types:
+        formatted = v.replace('_', ' ').title()
+        view_display.append(formatted)
+    
     prompt = f"""
 You are an expert movement analyst and physical therapist specializing in Functional Movement Screening (FMS).
 Analyze this {exercise_config['name']} assessment and provide a detailed evaluation.
@@ -1876,8 +1841,8 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
 ## Exercise Being Assessed
 **{exercise_name}**
 
-## Camera Views Provided
-{', '.join([v.replace('_', ' ').title() for v in view_types])}
+## Camera Views Provided ({len(view_types)} views)
+{', '.join(view_display)}
 
 ## Your Analysis Focus
 {exercise_config['focus_areas']}
@@ -1936,7 +1901,8 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
 1. Score based on the specific criteria for {exercise_config['name']}
 2. Be specific about what you observe in each view
 3. If multiple views provided, synthesize observations from all views
-4. Output ONLY valid JSON
+4. For bilateral exercises (balance, lunge), comment on symmetry between left and right
+5. Output ONLY valid JSON
 
 Respond with ONLY the JSON object.
 """
@@ -1983,7 +1949,9 @@ def analyze_exercise(
             for j, (frame, ts) in enumerate(zip(frames, timestamps)):
                 all_frames.append(frame)
                 all_timestamps.append(ts)
-                frame_view_labels.append(f"{view_label} @ {ts:.2f}s")
+                frame_view_labels.append(f"{view_label.replace('_', ' ').title()} @ {ts:.2f}s")
+        
+        print(f"Total frames for analysis: {len(all_frames)}")
         
         # Build prompt
         prompt = build_exercise_prompt(
@@ -2017,7 +1985,7 @@ def analyze_exercise(
         response = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": content}],
-            max_tokens=2000,
+            max_tokens=2500,
             temperature=0.3
         )
         
@@ -2087,7 +2055,7 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "3.0-multi-exercise",
+            "version": "3.1-combined-exercises",
             "supported_exercises": list(EXERCISE_PROMPTS.keys()),
             "timestamp": datetime.now().isoformat()
         })
@@ -2124,23 +2092,20 @@ def create_app():
         
         Expected JSON body:
         {
-            "exercise_type": "functional_squat",
-            "exercise_name": "Functional Squat",
+            "exercise_type": "single_leg_balance",
+            "exercise_name": "Single Leg Balance",
             "category": "lower_fms",
-            "videos": ["<base64>", "<base64>"],  // One per view
-            "view_types": ["front", "side"],
+            "videos": ["<base64>", "<base64>", "<base64>", "<base64>"],
+            "view_types": ["front_left", "left_side", "front_right", "right_side"],
             "mime_type": "video/mp4",
             "reported_pain": false,
             "pose_detection_data": [
                 { view 1 data },
-                { view 2 data }
+                { view 2 data },
+                { view 3 data },
+                { view 4 data }
             ],
-            "scoring_criteria": {
-                "score_3": ["criteria 1", "criteria 2"],
-                "score_2": [...],
-                "score_1": [...],
-                "score_0": [...]
-            }
+            "scoring_criteria": { optional custom criteria }
         }
         """
         try:
@@ -2213,9 +2178,15 @@ def create_app():
     def list_exercises():
         """List all supported exercises."""
         return jsonify({
-            "exercises": [
-                {"id": k, "name": v["name"]}
-                for k, v in EXERCISE_PROMPTS.items()
+            "lower_fms": [
+                {"id": "functional_squat", "name": "Functional Squat", "views": 2},
+                {"id": "single_leg_balance", "name": "Single Leg Balance", "views": 4},
+                {"id": "inline_lunge", "name": "In-Line Lunge", "views": 4},
+                {"id": "plank", "name": "Plank", "views": 1}
+            ],
+            "upper_fms": [
+                {"id": "shoulder_mobility", "name": "Shoulder Mobility (IR/ER)", "views": 1},
+                {"id": "ckcuest", "name": "CKCUEST", "views": 1}
             ]
         })
     
@@ -2223,7 +2194,7 @@ def create_app():
     def root():
         return jsonify({
             "service": "KynetiqEdge FMS Analysis API",
-            "version": "3.0-multi-exercise",
+            "version": "3.1-combined-exercises",
             "model": MODEL,
             "endpoints": {
                 "GET /": "API info",
@@ -2234,16 +2205,14 @@ def create_app():
             },
             "supported_exercises": {
                 "lower_fms": [
-                    "functional_squat",
-                    "single_leg_balance_left",
-                    "single_leg_balance_right",
-                    "inline_lunge_left",
-                    "inline_lunge_right"
+                    "functional_squat (2 views: front, side)",
+                    "single_leg_balance (4 views: front L, side L, front R, side R)",
+                    "inline_lunge (4 views: front L, side L, front R, side R)",
+                    "plank (1 view: side)"
                 ],
                 "upper_fms": [
-                    "shoulder_mobility",
-                    "ckcuest",
-                    "plank"
+                    "shoulder_mobility (1 view: back)",
+                    "ckcuest (1 view: front)"
                 ]
             }
         })
@@ -2254,7 +2223,7 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
-    print("Starting FMS Analysis API v3.0...")
+    print("Starting FMS Analysis API v3.1...")
     print(f"Model: {MODEL}")
     print(f"Supported exercises: {list(EXERCISE_PROMPTS.keys())}")
     app.run(host="0.0.0.0", port=8000, debug=True)
