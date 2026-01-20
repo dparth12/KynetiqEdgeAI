@@ -1504,9 +1504,10 @@ from typing import Dict, Optional, List, Tuple
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-DEFAULT_FRAME_COUNT = 5
-MAX_FRAME_DIMENSION = 768
-JPEG_QUALITY = 75
+# Optimized for faster processing (Vercel timeout considerations)
+DEFAULT_FRAME_COUNT = 3  # Reduced from 5 for faster API response
+MAX_FRAME_DIMENSION = 512  # Reduced from 768 for smaller payloads
+JPEG_QUALITY = 60  # Reduced from 75 for smaller file sizes
 
 
 # ============================================================
@@ -1518,36 +1519,50 @@ EXERCISE_PROMPTS = {
         "name": "Functional Squat",
         "category": "lower_fms",
         "focus_areas": """
+Analyze the overhead deep squat from FRONT and SIDE views:
+
 Your job is to analyze what pose detection CANNOT reliably capture:
-1. **Torso position** - Forward lean angle, uprightness
-2. **Heel contact** - Whether heels lift off the ground
-3. **Knee tracking** - Valgus (inward collapse) or varus (outward bow)
-4. **Arm/overhead position** - If arms are maintained overhead
-5. **Balance & control** - Stability throughout movement
-6. **Squat depth** - Thighs relative to parallel
+1. **Squat Depth** - CRITICAL: Thighs must go BELOW parallel (hip crease below knee level)
+2. **Torso Position** - Torso and tibia should be parallel (minimal forward lean)
+   - Measure forward lean angle from vertical
+3. **Heel Contact** - CRITICAL: Heels must stay FLAT on ground throughout
+   - Any heel lift = compensation
+4. **Knee Tracking** - Watch from FRONT view for:
+   - Valgus (knees collapsing inward)
+   - Varus (knees bowing outward)
+   - Knees should track over 2nd/3rd toe
+5. **Arm/Overhead Position** - Arms/dowel should stay overhead without dropping forward
+6. **Balance & Control** - Smooth, controlled descent and ascent
+
+FROM SIDE VIEW: Check depth, torso angle, heel contact
+FROM FRONT VIEW: Check knee tracking (valgus/varus), balance
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Thighs below parallel
-- Torso and tibia parallel (minimal forward lean)
-- Heels flat on ground
-- Knees aligned over feet
-- No forward lean of arms/dowel
+- Thighs go BELOW parallel (hip crease below knee)
+- Torso and tibia parallel (minimal forward lean <10°)
+- Heels stay FLAT on ground throughout
+- Knees aligned over feet (no valgus/varus)
+- Arms/dowel maintained overhead, no forward lean
 
 **Score 2 (Compensated):**
-- Heels lift off ground
-- Torso leans forward >10-15°
-- Mild knee valgus/varus
+- Reaches parallel but with ONE OR MORE of:
+  - Heels lift off ground
+  - Torso leans forward >10-15° from vertical
+  - Mild knee valgus or varus (<10°)
+  - Arms drop forward slightly
 
 **Score 1 (Dysfunctional):**
 - Cannot reach parallel depth
 - Major loss of balance
-- Multiple compensations
+- Severe forward lean (>20-30°)
+- Significant knee valgus/varus (>10°)
+- Multiple compensations present
 
 **Score 0 (Pain):**
 - Reports pain during movement
 """,
-        "observations_keys": ["depth", "torso", "heels", "knees", "arms"]
+        "observations_keys": ["depth", "torsoAngle", "heelContact", "kneeTracking", "armPosition", "overallControl"]
     },
     
     "single_leg_balance": {
@@ -1556,16 +1571,26 @@ Your job is to analyze what pose detection CANNOT reliably capture:
         "focus_areas": """
 Analyze BOTH legs - you will see 4 views:
 1. Front view - Left leg standing
-2. Left side view - Left leg standing  
+2. Left side view - Left leg standing
 3. Front view - Right leg standing
 4. Right side view - Right leg standing
 
-For each leg, assess:
-1. **Stability** - Amount of sway, wobble, or corrections
-2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
-3. **Trunk position** - Upright vs leaning
-4. **Duration quality** - Ability to maintain position
+For each leg, CAREFULLY assess:
+1. **Hold Duration** - CRITICAL: Estimate how many seconds the person maintains balance without touching down
+2. **Hip Drop** - CRITICAL: Watch the pelvis - does the unsupported side drop >10°? This indicates glute medius weakness
+3. **Stability** - Amount of sway, wobble, or corrections needed
+4. **Trunk position** - Should be upright, not leaning to compensate
 5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+
+DURATION ASSESSMENT:
+- Watch for when balance is LOST (foot touches down, excessive movement, or test ends)
+- Estimate the hold time in seconds for each leg
+- The goal is 20+ seconds of stable balance
+
+HIP DROP ASSESSMENT (from FRONT view):
+- Draw an imaginary line across the pelvis/hips
+- If the non-stance side drops more than 10° below horizontal = HIP DROP PRESENT
+- Hip drop indicates weakness in the stance leg's hip stabilizers
 
 IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
 """,
@@ -1573,24 +1598,28 @@ IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
 **Score 3 (Optimal):**
 - Holds ≥20 seconds on EACH leg with minimal sway
 - Trunk upright on both sides
-- No hip drop >10° on either side
+- NO hip drop >10° on either side (pelvis stays level)
 - Symmetrical performance between legs
 
 **Score 2 (Compensated):**
 - Holds 10-19 seconds on one or both legs
 - Mild sway or compensation
+- Minor hip drop (5-10°) acceptable
 - Minor asymmetry between sides
 
 **Score 1 (Dysfunctional):**
 - Holds <10 seconds on one or both legs
-- Frequent wobble
-- Touches down
+- Frequent wobble or corrections
+- Touches down or loses balance
+- Significant hip drop (>10°)
 - Significant asymmetry between legs
 
 **Score 0 (Pain):**
 - Pain reported
+
+ASYMMETRY FLAG: If one leg holds significantly longer (>5 sec difference) or shows notably worse hip drop, flag this in your assessment.
 """,
-        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration", "symmetry", "leftLeg", "rightLeg"]
+        "observations_keys": ["holdDurationLeft", "holdDurationRight", "hipDropLeft", "hipDropRight", "stability", "trunkPosition", "symmetry", "asymmetryFlag"]
     },
     
     "inline_lunge": {
@@ -1603,42 +1632,50 @@ Analyze BOTH legs - you will see 4 views:
 3. Front view - Right leg forward
 4. Right side view - Right leg forward
 
-For each leg forward, assess:
-1. **Trunk position** - Upright vs leaning
-2. **Front heel contact** - Stays flat or lifts
-3. **Knee tracking** - Front knee over foot, no valgus/varus
-4. **Back knee position** - Touches behind front heel
-5. **Balance & control** - Stability throughout, no stepping off line
-6. **Alignment** - Feet stay on the line
+For each leg forward, CAREFULLY assess:
+1. **Trunk position** - MUST be upright throughout the movement
+2. **Front heel contact** - MUST stay flat on ground (heel lift = compensation)
+3. **Back knee position** - Should touch floor JUST BEHIND the front heel (not beside it)
+4. **Knee tracking** - Front knee must track over foot, watch for valgus (inward) or varus (outward)
+5. **Balance & control** - No wobble, no stepping off the line
+6. **Line alignment** - Feet must stay on the imaginary line (heel-to-toe alignment)
+
+CRITICAL CHECKPOINTS:
+- From SIDE VIEW: Check trunk angle (should be vertical), front heel contact, back knee position
+- From FRONT VIEW: Check knee tracking (valgus/varus), balance, line alignment
 
 IMPORTANT: Compare LEFT vs RIGHT leg forward performance and note any asymmetries.
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Trunk upright on both sides
-- Front heel flat on both legs
-- Back knee touches floor behind front heel
-- No wobble on either side
-- Knee tracks over foot
-- Symmetrical performance
+- Trunk upright throughout on BOTH sides
+- Front heel stays FLAT on both legs
+- Back knee touches floor JUST BEHIND front heel
+- NO wobble on either side
+- Front knee tracks directly over foot (no valgus/varus)
+- Symmetrical performance between legs
 
 **Score 2 (Compensated):**
-- Minor trunk lean on one or both sides
-- Heel lift
-- Mild valgus/varus drift
+- Minor trunk lean (<15°) on one or both sides
+- Slight heel lift
+- Mild valgus/varus drift (<10°)
+- Minor loss of contact with dowel (if used)
 - Minor asymmetry between legs
 
 **Score 1 (Dysfunctional):**
 - Cannot complete lunge under control
 - Loss of balance on one or both sides
-- Major compensations
-- Step off line
+- Major trunk lean (>15°)
+- Steps off the line
+- Significant valgus/varus (>10°)
 - Significant asymmetry between legs
 
 **Score 0 (Pain):**
 - Reports pain during lunge
+
+ASYMMETRY FLAG: Note if one side shows significantly worse performance (more compensation, less control).
 """,
-        "observations_keys": ["alignment", "torso", "heels", "kneeTracking", "balance", "symmetry", "leftLeg", "rightLeg"]
+        "observations_keys": ["trunkPosition", "frontHeelContact", "backKneePosition", "kneeTracking", "balance", "lineAlignment", "symmetry", "leftLegNotes", "rightLegNotes"]
     },
     
     "plank": {
@@ -1646,33 +1683,47 @@ IMPORTANT: Compare LEFT vs RIGHT leg forward performance and note any asymmetrie
         "category": "lower_fms",
         "focus_areas": """
 Analyze the plank hold from SIDE VIEW:
-1. **Spine alignment** - Neutral spine, no excessive lordosis or kyphosis
-2. **Hip position** - No sagging or piking
-3. **Head position** - Neutral, in line with spine
-4. **Hold quality** - Steady vs shaking/compensating
-5. **Duration** - How long good form is maintained
+1. **Hold Duration** - CRITICAL: Count/estimate how many seconds good form is maintained
+2. **Spine alignment** - Must be NEUTRAL (straight line from head to heels)
+   - No excessive lordosis (lower back sag/arch)
+   - No kyphosis (upper back rounding)
+3. **Hip position** - CRITICAL: Watch for hip drop (sag) or piking (hips too high)
+   - Hip drop >10° = compensation
+4. **Head position** - Should be neutral, in line with spine (not looking up or down)
+5. **Rotation** - Body should stay square, no twisting
+6. **Stability** - Steady hold vs shaking/trembling
+
+DURATION ASSESSMENT:
+- The test is typically 60 seconds
+- Note when form starts to break down
+- If they maintain perfect form for full duration = Score 3
+- Count seconds of GOOD FORM, not just total hold time
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Holds ≥60 seconds
-- Spine neutral
+- Holds ≥60 seconds WITH good form
+- Spine neutral throughout (straight line head to heels)
 - No hip drop >10°
 - No rotation
+- Minimal trembling
 
 **Score 2 (Acceptable):**
-- Holds 30-59 seconds
-- Minor sway/mild compensation
+- Holds 30-59 seconds with good form
+- OR holds longer but with minor sway/mild compensation
+- Slight hip position changes acceptable
 
 **Score 1 (Dysfunctional):**
-- Holds <30 seconds
-- Significant sway, hip drop, rotation
-- Needs multiple corrections
+- Holds <30 seconds before form breaks down
+- Significant hip sag or pike
+- Significant sway, hip drop >10°, or rotation
+- Needs multiple corrections to maintain position
+- Cannot maintain straight body line
 
 **Score 0 (Pain):**
 - Pain reported
-- Cannot maintain position
+- Cannot get into or maintain position at all
 """,
-        "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "overall"]
+        "observations_keys": ["holdDuration", "spineAlignment", "hipPosition", "rotation", "stability", "formBreakdownTime"]
     },
     
     "shoulder_mobility": {
@@ -1707,30 +1758,167 @@ Analyze shoulder internal/external rotation from BACK VIEW:
         "category": "upper_fms",
         "focus_areas": """
 Analyze the push-up position cross-body touches from FRONT VIEW:
-1. **Touch count** - Count valid cross-body touches (hand crosses midline to touch other hand)
-2. **Body position** - Straight line from head to heels
-3. **Hip rotation** - Should be minimal (<15°)
+1. **Touch count** - Count valid cross-body touches (hand clearly crosses midline to touch opposite hand)
+2. **Body position** - Must maintain straight line from head to heels throughout
+3. **Hip rotation** - Must be <15° rotation/sag to count as valid
 4. **Control** - Stable base, no excessive swaying
-5. **Speed vs quality** - Fast but controlled touches
+5. **Landing quality** - Controlled return to start position
+
+VALIDITY RULES:
+- Valid rep = one hand clearly crosses midline to touch the opposite hand
+- Body must stay in straight line (hips <15° rotation/sag)
+- If hips rotate >15° or sag significantly, that rep is INVALID
+
+COUNT THE TOTAL VALID TOUCHES IN THE 15-SECOND VIDEO.
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- ≥21 valid touches in 15 seconds
-- Body maintains straight line
-- Minimal hip rotation
+- MEN: ≥26 valid touches in 15 seconds
+- WOMEN: ≥22 valid touches in 15 seconds
+- Body maintains straight line throughout
+- Minimal hip rotation (<15°)
 
 **Score 2 (Acceptable):**
-- 18-20 valid touches in 15 seconds
-- Minor form breakdown
+- MEN: 22-25 valid touches in 15 seconds
+- WOMEN: 18-21 valid touches in 15 seconds
+- Minor form breakdown acceptable
 
 **Score 1 (Dysfunctional):**
-- <18 valid touches in 15 seconds
+- MEN: <22 valid touches in 15 seconds
+- WOMEN: <18 valid touches in 15 seconds
 - Significant form breakdown
+- Large asymmetry between sides
 
 **Score 0 (Pain/Unable):**
 - Unable to perform or pain reported
+
+NOTE: If gender is not specified, use male thresholds as default.
+Reference: Healthy young men average ~26 ± 4.5 touches; women ~22 ± 2.5 touches.
 """,
-        "observations_keys": ["touchCount", "bodyPosition", "hipRotation"]
+        "observations_keys": ["touchCount", "bodyPosition", "hipRotation", "formQuality"]
+    },
+
+    "step_down_anterior": {
+        "name": "Step Down Anterior",
+        "category": "lower_fms",
+        "focus_areas": """
+Analyze the ANTERIOR (forward) step down from FRONT and SIDE views:
+
+The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground in FRONT of the box.
+
+CRITICAL ASSESSMENTS:
+1. **Knee Alignment** - CRITICAL: Watch from FRONT view
+   - Knee should track over 2nd/3rd toe
+   - Valgus (knee collapsing inward) = major fault
+   - Varus (knee bowing outward) = compensation
+   - Measure angle of deviation from vertical
+
+2. **Trunk Position** - Should remain UPRIGHT
+   - Watch from SIDE view for forward lean
+   - Excessive lean (>15°) = compensation
+
+3. **Stance Foot Stability** - Must remain FLAT and STABLE
+   - Heel lift = fault
+   - Foot movement/rotation = instability
+
+4. **Pelvis Control** - Should stay LEVEL
+   - Hip drop on non-stance side = glute weakness
+
+5. **Movement Control** - Smooth, controlled descent
+   - No collapsing or dropping
+   - Should be able to tap heel without putting weight on it
+
+FROM FRONT VIEW: Knee tracking, valgus/varus angle, pelvis level
+FROM SIDE VIEW: Trunk angle, stance foot stability, movement control
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Smooth controlled descent throughout
+- Stance foot remains flat and stable (no movement)
+- Knee aligned with 2nd toe (no valgus/varus)
+- Trunk upright
+- Pelvis level (no hip drop)
+- Can tap heel without collapsing
+
+**Score 2 (Compensated):**
+- Minor trunk lean (<10°)
+- Mild knee valgus/varus (<10°)
+- Slight heel lift or foot wobble
+- Minor hip drop
+
+**Score 1 (Dysfunctional):**
+- Major knee valgus (>10°) - knee collapses inward
+- Trunk lean >15°
+- Repeated loss of balance
+- Cannot tap heel without collapsing/weight bearing
+- Significant stance foot movement
+- Major hip drop
+
+**Score 0 (Pain):**
+- Reports pain during test
+""",
+        "observations_keys": ["kneeAlignment", "valgusAngle", "trunkPosition", "stanceFootStability", "pelvisControl", "movementQuality", "leftLeg", "rightLeg"]
+    },
+
+    "step_down_lateral": {
+        "name": "Step Down Lateral",
+        "category": "lower_fms",
+        "focus_areas": """
+Analyze the LATERAL (sideways) step down from FRONT view:
+
+The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground to the SIDE of the box.
+
+CRITICAL ASSESSMENTS:
+1. **Knee Alignment** - CRITICAL: Watch for valgus/varus
+   - Knee should track over toes
+   - Valgus (inward collapse) is the most common fault
+   - Note the angle of deviation
+
+2. **Pelvis/Hip Control** - CRITICAL
+   - Pelvis should stay LEVEL
+   - Hip drop on the lowering side = Trendelenburg sign = glute medius weakness
+   - Measure hip drop angle if visible
+
+3. **Trunk Position** - Should remain UPRIGHT
+   - Lateral trunk lean = compensation for hip weakness
+   - Note direction and degree of lean
+
+4. **Stance Foot Stability**
+   - Foot should remain flat
+   - Heel lift = fault
+   - No rotation or movement
+
+5. **Movement Control**
+   - Smooth, controlled descent
+   - No sudden drops or loss of control
+
+FROM FRONT VIEW: Knee tracking, pelvis level, trunk position, overall control
+""",
+        "scoring": """
+**Score 3 (Optimal):**
+- Controlled descent throughout
+- Stance foot flat and stable
+- Knee tracks over toes (no valgus/varus)
+- Pelvis stays LEVEL (no hip drop)
+- Trunk upright (no lateral lean)
+
+**Score 2 (Compensated):**
+- Minor trunk lean (<10°)
+- Slight hip drop (<10°)
+- Mild knee valgus (<10°)
+- Minor wobble but maintains control
+
+**Score 1 (Dysfunctional):**
+- Significant knee valgus/hip drop (>10°)
+- Trunk lean >15°
+- Repeated loss of balance
+- Cannot control descent
+- Stance foot lifts or moves
+
+**Score 0 (Pain):**
+- Pain reported during test
+""",
+        "observations_keys": ["kneeAlignment", "valgusAngle", "hipDrop", "trunkPosition", "stanceFootStability", "movementControl", "leftLeg", "rightLeg"]
     }
 }
 
@@ -1822,11 +2010,42 @@ def build_exercise_prompt(
     exercise_name: str,
     view_types: List[str],
     pose_data_list: List[Dict],
-    scoring_criteria: Optional[Dict] = None
+    scoring_criteria: Optional[Dict] = None,
+    side: Optional[str] = None
 ) -> str:
     """Build exercise-specific analysis prompt."""
-    
+
     exercise_config = EXERCISE_PROMPTS.get(exercise_type, EXERCISE_PROMPTS["functional_squat"])
+
+    # If analyzing just one side, adjust the focus areas
+    if side and exercise_type in ["single_leg_balance", "inline_lunge"]:
+        side_upper = side.upper()
+        focus_override = f"""
+Analyze the {side_upper} SIDE ONLY - you will see 2 views:
+1. Front view - {side.capitalize()} leg {'standing' if exercise_type == 'single_leg_balance' else 'forward'}
+2. {side.capitalize()} side view - {side.capitalize()} leg {'standing' if exercise_type == 'single_leg_balance' else 'forward'}
+
+For the {side_upper} side, assess:
+"""
+        if exercise_type == "single_leg_balance":
+            focus_override += """
+1. **Stability** - Amount of sway, wobble, or corrections
+2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
+3. **Trunk position** - Upright vs leaning
+4. **Duration quality** - Ability to maintain position
+5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+"""
+        else:  # inline_lunge
+            focus_override += """
+1. **Trunk position** - Upright vs leaning
+2. **Front heel contact** - Stays flat or lifts
+3. **Knee tracking** - Front knee over foot, no valgus/varus
+4. **Back knee position** - Touches behind front heel
+5. **Balance & control** - Stability throughout, no stepping off line
+6. **Alignment** - Feet stay on the line
+"""
+        exercise_config = dict(exercise_config)
+        exercise_config["focus_areas"] = focus_override
     
     # Format view types for display
     view_display = []
@@ -1932,7 +2151,8 @@ def analyze_exercise(
     view_types: List[str],
     pose_data_list: List[Dict],
     reported_pain: bool = False,
-    scoring_criteria: Optional[Dict] = None
+    scoring_criteria: Optional[Dict] = None,
+    side: Optional[str] = None
 ) -> Dict:
     """Analyze exercise video(s) using GPT-4o."""
     try:
@@ -1959,7 +2179,8 @@ def analyze_exercise(
             exercise_name,
             view_types,
             pose_data_list,
-            scoring_criteria
+            scoring_criteria,
+            side
         )
         
         if reported_pain:
@@ -1977,7 +2198,7 @@ def analyze_exercise(
                 "type": "image_url",
                 "image_url": {
                     "url": f"data:image/jpeg;base64,{frame_b64}",
-                    "detail": "high"
+                    "detail": "low"  # Use low detail for faster processing
                 }
             })
         
@@ -2055,7 +2276,7 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "3.1-combined-exercises",
+            "version": "3.2-optimized-bilateral",
             "supported_exercises": list(EXERCISE_PROMPTS.keys()),
             "timestamp": datetime.now().isoformat()
         })
@@ -2129,17 +2350,19 @@ def create_app():
             reported_pain = data.get("reported_pain", False)
             pose_data_list = data.get("pose_detection_data", [])
             scoring_criteria = data.get("scoring_criteria")
-            
+            side = data.get("side")  # "left" or "right" for bilateral exercises
+
             # Ensure pose_data_list is a list
             if isinstance(pose_data_list, dict):
                 pose_data_list = [pose_data_list]
-            
+
             print(f"=== Analyze Request ===")
             print(f"  Exercise: {exercise_name} ({exercise_type})")
             print(f"  Videos: {len(videos)}")
             print(f"  Views: {view_types}")
+            print(f"  Side: {side or 'both'}")
             print(f"  Pain reported: {reported_pain}")
-            
+
             result = analyze_exercise(
                 exercise_type=exercise_type,
                 exercise_name=exercise_name,
@@ -2147,16 +2370,20 @@ def create_app():
                 view_types=view_types,
                 pose_data_list=pose_data_list,
                 reported_pain=reported_pain,
-                scoring_criteria=scoring_criteria
+                scoring_criteria=scoring_criteria,
+                side=side
             )
             
             if result["success"]:
-                return jsonify({
+                response_data = {
                     "success": True,
                     "timestamp": datetime.now().isoformat(),
                     "result": result["analysis"],
                     "exercise_type": exercise_type
-                })
+                }
+                if side:
+                    response_data["side"] = side
+                return jsonify(response_data)
             else:
                 return jsonify({
                     "success": False,
@@ -2182,7 +2409,9 @@ def create_app():
                 {"id": "functional_squat", "name": "Functional Squat", "views": 2},
                 {"id": "single_leg_balance", "name": "Single Leg Balance", "views": 4},
                 {"id": "inline_lunge", "name": "In-Line Lunge", "views": 4},
-                {"id": "plank", "name": "Plank", "views": 1}
+                {"id": "plank", "name": "Plank", "views": 1},
+                {"id": "step_down_anterior", "name": "Step Down Anterior", "views": 2},
+                {"id": "step_down_lateral", "name": "Step Down Lateral", "views": 1}
             ],
             "upper_fms": [
                 {"id": "shoulder_mobility", "name": "Shoulder Mobility (IR/ER)", "views": 1},
@@ -2194,7 +2423,7 @@ def create_app():
     def root():
         return jsonify({
             "service": "KynetiqEdge FMS Analysis API",
-            "version": "3.1-combined-exercises",
+            "version": "3.2-optimized-bilateral",
             "model": MODEL,
             "endpoints": {
                 "GET /": "API info",
@@ -2208,7 +2437,9 @@ def create_app():
                     "functional_squat (2 views: front, side)",
                     "single_leg_balance (4 views: front L, side L, front R, side R)",
                     "inline_lunge (4 views: front L, side L, front R, side R)",
-                    "plank (1 view: side)"
+                    "plank (1 view: side)",
+                    "step_down_anterior (2 views: front, side)",
+                    "step_down_lateral (1 view: front)"
                 ],
                 "upper_fms": [
                     "shoulder_mobility (1 view: back)",
