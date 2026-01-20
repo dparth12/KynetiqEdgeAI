@@ -1521,21 +1521,29 @@ EXERCISE_PROMPTS = {
         "focus_areas": """
 Analyze the overhead deep squat from FRONT and SIDE views:
 
-Your job is to analyze what pose detection CANNOT reliably capture:
-1. **Squat Depth** - CRITICAL: Thighs must go BELOW parallel (hip crease below knee level)
-2. **Torso Position** - Torso and tibia should be parallel (minimal forward lean)
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE knee angle measurements:
+- **left_knee** and **right_knee** angles show depth achieved
+- If min knee angle <90° = excellent depth (below parallel)
+- If min knee angle 90-100° = good depth (near parallel)
+- If min knee angle >100° = insufficient depth
+- TRUST this sensor data for depth assessment
+
+YOUR visual analysis should focus on what sensors CAN'T capture:
+1. **Torso Position** - Torso and tibia should be parallel (minimal forward lean)
    - Measure forward lean angle from vertical
-3. **Heel Contact** - CRITICAL: Heels must stay FLAT on ground throughout
+2. **Heel Contact** - CRITICAL: Heels must stay FLAT on ground throughout
    - Any heel lift = compensation
-4. **Knee Tracking** - Watch from FRONT view for:
+3. **Knee Tracking** - Watch from FRONT view for:
    - Valgus (knees collapsing inward)
    - Varus (knees bowing outward)
    - Knees should track over 2nd/3rd toe
-5. **Arm/Overhead Position** - Arms/dowel should stay overhead without dropping forward
-6. **Balance & Control** - Smooth, controlled descent and ascent
+4. **Arm/Overhead Position** - Arms/dowel should stay overhead without dropping forward
+5. **Balance & Control** - Smooth, controlled descent and ascent
 
-FROM SIDE VIEW: Check depth, torso angle, heel contact
+FROM SIDE VIEW: Check torso angle, heel contact
 FROM FRONT VIEW: Check knee tracking (valgus/varus), balance
+Use the SENSOR DATA for depth assessment, your visual analysis for everything else.
 """,
         "scoring": """
 **Score 3 (Optimal):**
@@ -1575,22 +1583,25 @@ Analyze BOTH legs - you will see 4 views:
 3. Front view - Right leg standing
 4. Right side view - Right leg standing
 
-For each leg, CAREFULLY assess:
-1. **Hold Duration** - CRITICAL: Estimate how many seconds the person maintains balance without touching down
-2. **Hip Drop** - CRITICAL: Watch the pelvis - does the unsupported side drop >10°? This indicates glute medius weakness
-3. **Stability** - Amount of sway, wobble, or corrections needed
-4. **Trunk position** - Should be upright, not leaning to compensate
-5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE measurements:
+- **hip_drop_detected**: TRUE/FALSE based on >10° difference between left/right hip angles
+- **max_hip_angle_difference**: The maximum hip angle asymmetry detected (degrees)
+- **estimated_hold_duration**: Time in exercise position based on frame analysis
+- **left_hip** and **right_hip** angles throughout the movement
+
+TRUST THIS DATA for hip drop assessment. If hip_drop_detected is TRUE and max_hip_angle_difference >10°,
+the person has significant pelvic drop indicating glute medius weakness.
+
+YOUR visual analysis should confirm and add context:
+1. **Stability** - Amount of sway, wobble, or corrections needed
+2. **Trunk position** - Should be upright, not leaning to compensate
+3. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
+4. **Touch downs** - Did foot touch the ground?
 
 DURATION ASSESSMENT:
-- Watch for when balance is LOST (foot touches down, excessive movement, or test ends)
-- Estimate the hold time in seconds for each leg
-- The goal is 20+ seconds of stable balance
-
-HIP DROP ASSESSMENT (from FRONT view):
-- Draw an imaginary line across the pelvis/hips
-- If the non-stance side drops more than 10° below horizontal = HIP DROP PRESENT
-- Hip drop indicates weakness in the stance leg's hip stabilizers
+- Use the **estimated_hold_duration** from sensor data as a baseline
+- Your visual analysis should confirm this and note when balance is LOST
 
 IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
 """,
@@ -1632,11 +1643,17 @@ Analyze BOTH legs - you will see 4 views:
 3. Front view - Right leg forward
 4. Right side view - Right leg forward
 
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE measurements:
+- **left_knee** and **right_knee**: Angle tracking during lunge
+- **left_hip** and **right_hip**: Hip angles for balance assessment
+- Use knee angle data to assess depth and tracking
+
 For each leg forward, CAREFULLY assess:
 1. **Trunk position** - MUST be upright throughout the movement
 2. **Front heel contact** - MUST stay flat on ground (heel lift = compensation)
 3. **Back knee position** - Should touch floor JUST BEHIND the front heel (not beside it)
-4. **Knee tracking** - Front knee must track over foot, watch for valgus (inward) or varus (outward)
+4. **Knee tracking** - Use knee angle data to detect valgus (inward) or varus (outward)
 5. **Balance & control** - No wobble, no stepping off the line
 6. **Line alignment** - Feet must stay on the imaginary line (heel-to-toe alignment)
 
@@ -1683,21 +1700,32 @@ ASYMMETRY FLAG: Note if one side shows significantly worse performance (more com
         "category": "lower_fms",
         "focus_areas": """
 Analyze the plank hold from SIDE VIEW:
-1. **Hold Duration** - CRITICAL: Count/estimate how many seconds good form is maintained
-2. **Spine alignment** - Must be NEUTRAL (straight line from head to heels)
+
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE measurements:
+- **exercise_detected**: TRUE if plank position was detected by the sensor
+- **exercise_position_percentage**: % of frames where plank position was held
+- **estimated_hold_duration**: Estimated hold time based on frames in position
+- **back_angle**: Spine/back angle measurements (min, max, current)
+  - Back angle near 180° = perfectly straight spine
+  - Back angle <160° = significant sag or pike
+
+TRUST THIS DATA for duration and spine angle baseline.
+The estimated_hold_duration tells you how long good form was maintained.
+
+YOUR visual analysis should confirm and assess:
+1. **Spine alignment** - Must be NEUTRAL (straight line from head to heels)
    - No excessive lordosis (lower back sag/arch)
    - No kyphosis (upper back rounding)
-3. **Hip position** - CRITICAL: Watch for hip drop (sag) or piking (hips too high)
-   - Hip drop >10° = compensation
-4. **Head position** - Should be neutral, in line with spine (not looking up or down)
-5. **Rotation** - Body should stay square, no twisting
-6. **Stability** - Steady hold vs shaking/trembling
+2. **Hip position** - Watch for hip drop (sag) or piking (hips too high)
+3. **Head position** - Should be neutral, in line with spine
+4. **Rotation** - Body should stay square, no twisting
+5. **Stability** - Steady hold vs shaking/trembling
 
 DURATION ASSESSMENT:
-- The test is typically 60 seconds
-- Note when form starts to break down
-- If they maintain perfect form for full duration = Score 3
-- Count seconds of GOOD FORM, not just total hold time
+- Use **estimated_hold_duration** from sensor data
+- Note when form starts to break down visually
+- If back_angle deviation is significant, form is compromised
 """,
         "scoring": """
 **Score 3 (Optimal):**
@@ -1731,11 +1759,23 @@ DURATION ASSESSMENT:
         "category": "upper_fms",
         "focus_areas": """
 Analyze shoulder internal/external rotation from BACK VIEW:
+
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE shoulder angle measurements:
+- **left_shoulder**: ROM range (min and max angles during movement)
+- **right_shoulder**: ROM range (min and max angles during movement)
+
+These angles help quantify the range of motion achieved.
+TRUST this data for ROM assessment.
+
+YOUR visual analysis should assess:
 1. **Fist distance** - How close the fists get to each other
 2. **Hand position** - Top hand reaching over shoulder, bottom hand reaching behind back
 3. **Compensations** - Trunk rotation, shoulder hiking, elbow position
 4. **Symmetry** - Compare if both sides tested
 5. **Range achieved** - Estimate in hand-lengths apart
+
+Use the shoulder angle data to inform your assessment of ROM achieved.
 """,
         "scoring": """
 **Score 3 (Optimal):**
@@ -1758,7 +1798,18 @@ Analyze shoulder internal/external rotation from BACK VIEW:
         "category": "upper_fms",
         "focus_areas": """
 Analyze the push-up position cross-body touches from FRONT VIEW:
-1. **Touch count** - Count valid cross-body touches (hand clearly crosses midline to touch opposite hand)
+
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides:
+- **exercise_detected**: TRUE if push-up position was detected
+- **exercise_count**: Number of movement repetitions detected by sensor
+- **exercise_position_percentage**: % of time in proper push-up position
+
+NOTE: The sensor counts may not perfectly match valid touches (it detects any movement cycles).
+Use this as a REFERENCE but your visual count of VALID touches is the final authority.
+
+YOUR visual analysis must count:
+1. **Touch count** - Count VALID cross-body touches (hand clearly crosses midline to touch opposite hand)
 2. **Body position** - Must maintain straight line from head to heels throughout
 3. **Hip rotation** - Must be <15° rotation/sag to count as valid
 4. **Control** - Stable base, no excessive swaying
@@ -1804,29 +1855,35 @@ Reference: Healthy young men average ~26 ± 4.5 touches; women ~22 ± 2.5 touche
         "focus_areas": """
 Analyze the ANTERIOR (forward) step down from FRONT and SIDE views:
 
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE measurements:
+- **left_knee** and **right_knee**: Angle tracking during descent
+- **left_hip** and **right_hip**: Hip angles for pelvis control
+- **hip_drop_detected**: TRUE if >10° difference between hip angles
+- **max_hip_angle_difference**: Maximum hip asymmetry detected
+
+TRUST this data for hip drop and knee angle assessment.
+
 The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground in FRONT of the box.
 
-CRITICAL ASSESSMENTS:
+YOUR visual analysis should assess:
 1. **Knee Alignment** - CRITICAL: Watch from FRONT view
    - Knee should track over 2nd/3rd toe
    - Valgus (knee collapsing inward) = major fault
    - Varus (knee bowing outward) = compensation
-   - Measure angle of deviation from vertical
+   - Use knee angle data to confirm deviation
 
 2. **Trunk Position** - Should remain UPRIGHT
    - Watch from SIDE view for forward lean
-   - Excessive lean (>15°) = compensation
 
 3. **Stance Foot Stability** - Must remain FLAT and STABLE
    - Heel lift = fault
    - Foot movement/rotation = instability
 
-4. **Pelvis Control** - Should stay LEVEL
+4. **Pelvis Control** - Use hip_drop_detected and max_hip_angle_difference data
    - Hip drop on non-stance side = glute weakness
 
 5. **Movement Control** - Smooth, controlled descent
-   - No collapsing or dropping
-   - Should be able to tap heel without putting weight on it
 
 FROM FRONT VIEW: Knee tracking, valgus/varus angle, pelvis level
 FROM SIDE VIEW: Trunk angle, stance foot stability, movement control
@@ -1866,31 +1923,35 @@ FROM SIDE VIEW: Trunk angle, stance foot stability, movement control
         "focus_areas": """
 Analyze the LATERAL (sideways) step down from FRONT view:
 
+## USING QUICKPOSE SENSOR DATA
+The pose detection provides ACCURATE measurements:
+- **left_knee** and **right_knee**: Angle tracking for valgus/varus assessment
+- **left_hip** and **right_hip**: Hip angles for pelvis level assessment
+- **hip_drop_detected**: TRUE if >10° difference between hip angles (Trendelenburg sign)
+- **max_hip_angle_difference**: Maximum hip asymmetry detected (degrees)
+
+TRUST this data for hip drop and knee angle assessment.
+If hip_drop_detected is TRUE → indicates glute medius weakness.
+
 The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground to the SIDE of the box.
 
-CRITICAL ASSESSMENTS:
+YOUR visual analysis should assess:
 1. **Knee Alignment** - CRITICAL: Watch for valgus/varus
    - Knee should track over toes
-   - Valgus (inward collapse) is the most common fault
-   - Note the angle of deviation
+   - Use knee angle data to quantify deviation
 
-2. **Pelvis/Hip Control** - CRITICAL
+2. **Pelvis/Hip Control** - Use hip_drop_detected data
    - Pelvis should stay LEVEL
-   - Hip drop on the lowering side = Trendelenburg sign = glute medius weakness
-   - Measure hip drop angle if visible
+   - Hip drop = Trendelenburg sign = glute medius weakness
 
 3. **Trunk Position** - Should remain UPRIGHT
    - Lateral trunk lean = compensation for hip weakness
-   - Note direction and degree of lean
 
 4. **Stance Foot Stability**
-   - Foot should remain flat
-   - Heel lift = fault
-   - No rotation or movement
+   - Foot should remain flat, no heel lift
 
 5. **Movement Control**
    - Smooth, controlled descent
-   - No sudden drops or loss of control
 
 FROM FRONT VIEW: Knee tracking, pelvis level, trunk position, overall control
 """,
@@ -2073,14 +2134,57 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
     # Add pose detection data if available
     if pose_data_list:
         prompt += "\n## POSE DETECTION DATA (from QuickPose SDK)\n"
+        prompt += "⚠️ TRUST THIS DATA - it is measured by sensors during recording.\n"
         for i, pose_data in enumerate(pose_data_list):
             view_name = view_types[i] if i < len(view_types) else f"View {i+1}"
             prompt += f"""
 **{view_name.replace('_', ' ').title()}:**
-- Min angle: {pose_data.get('min_knee_angle', 'N/A')}°
-- Max angle: {pose_data.get('max_knee_angle', 'N/A')}°
+"""
+            # === Bilateral Knee Angles ===
+            left_knee = pose_data.get('left_knee', {})
+            right_knee = pose_data.get('right_knee', {})
+            if left_knee or right_knee:
+                prompt += f"""- Left Knee: {left_knee.get('min', 'N/A'):.0f}° - {left_knee.get('max', 'N/A'):.0f}° (deepest: {left_knee.get('at_key_moment', 'N/A'):.0f}° @ {left_knee.get('time_at_key_moment', 'N/A'):.1f}s)
+- Right Knee: {right_knee.get('min', 'N/A'):.0f}° - {right_knee.get('max', 'N/A'):.0f}° (deepest: {right_knee.get('at_key_moment', 'N/A'):.0f}° @ {right_knee.get('time_at_key_moment', 'N/A'):.1f}s)
+"""
+            else:
+                # Fallback to legacy fields
+                prompt += f"""- Min knee angle: {pose_data.get('min_knee_angle', 'N/A')}°
+- Max knee angle: {pose_data.get('max_knee_angle', 'N/A')}°
+"""
+
+            # === Hip Angles (for hip drop detection) ===
+            left_hip = pose_data.get('left_hip', {})
+            right_hip = pose_data.get('right_hip', {})
+            if left_hip or right_hip:
+                prompt += f"""- Left Hip: {left_hip.get('min', 'N/A'):.0f}° - {left_hip.get('max', 'N/A'):.0f}°
+- Right Hip: {right_hip.get('min', 'N/A'):.0f}° - {right_hip.get('max', 'N/A'):.0f}°
+- **HIP DROP DETECTED: {'✅ YES' if pose_data.get('hip_drop_detected') else '❌ NO'}** (max diff: {pose_data.get('max_hip_angle_difference', 0):.1f}°)
+"""
+
+            # === Shoulder Angles ===
+            left_shoulder = pose_data.get('left_shoulder', {})
+            right_shoulder = pose_data.get('right_shoulder', {})
+            if left_shoulder.get('min', 180) < 180 or right_shoulder.get('min', 180) < 180:
+                prompt += f"""- Left Shoulder ROM: {left_shoulder.get('min', 'N/A'):.0f}° - {left_shoulder.get('max', 'N/A'):.0f}°
+- Right Shoulder ROM: {right_shoulder.get('min', 'N/A'):.0f}° - {right_shoulder.get('max', 'N/A'):.0f}°
+"""
+
+            # === Back Angle (for plank) ===
+            back_angle = pose_data.get('back_angle', {})
+            if back_angle.get('min', 180) < 180:
+                prompt += f"""- Back/Spine Angle: {back_angle.get('min', 'N/A'):.0f}° - {back_angle.get('max', 'N/A'):.0f}° (current: {back_angle.get('current', 'N/A'):.0f}°)
+"""
+
+            # === Exercise Detection ===
+            if pose_data.get('exercise_detected'):
+                prompt += f"""- **EXERCISE DETECTED: ✅ YES** (count: {pose_data.get('exercise_count', 0)}, {pose_data.get('exercise_position_percentage', 0):.0f}% of frames in position)
+- **ESTIMATED HOLD DURATION: {pose_data.get('estimated_hold_duration', 0):.1f}s**
+"""
+
+            # === General Data ===
+            prompt += f"""- Person detection: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
 - Key moment at: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s
-- Person detection: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
 """
 
     # Build observations keys
