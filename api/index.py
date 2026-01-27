@@ -2131,6 +2131,18 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
 {exercise_config['scoring'] if not scoring_criteria else format_custom_scoring(scoring_criteria)}
 """
 
+    # Helper function to safely format numbers
+    def fmt(val, decimals=0):
+        if val is None or val == 'N/A':
+            return 'N/A'
+        try:
+            if decimals == 0:
+                return f"{float(val):.0f}"
+            else:
+                return f"{float(val):.{decimals}f}"
+        except (ValueError, TypeError):
+            return 'N/A'
+
     # Add pose detection data if available
     if pose_data_list:
         prompt += "\n## POSE DETECTION DATA (from QuickPose SDK)\n"
@@ -2144,8 +2156,8 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
             left_knee = pose_data.get('left_knee', {})
             right_knee = pose_data.get('right_knee', {})
             if left_knee or right_knee:
-                prompt += f"""- Left Knee: {left_knee.get('min', 'N/A'):.0f}° - {left_knee.get('max', 'N/A'):.0f}° (deepest: {left_knee.get('at_key_moment', 'N/A'):.0f}° @ {left_knee.get('time_at_key_moment', 'N/A'):.1f}s)
-- Right Knee: {right_knee.get('min', 'N/A'):.0f}° - {right_knee.get('max', 'N/A'):.0f}° (deepest: {right_knee.get('at_key_moment', 'N/A'):.0f}° @ {right_knee.get('time_at_key_moment', 'N/A'):.1f}s)
+                prompt += f"""- Left Knee: {fmt(left_knee.get('min'))}° - {fmt(left_knee.get('max'))}° (deepest: {fmt(left_knee.get('at_key_moment'))}° @ {fmt(left_knee.get('time_at_key_moment'), 1)}s)
+- Right Knee: {fmt(right_knee.get('min'))}° - {fmt(right_knee.get('max'))}° (deepest: {fmt(right_knee.get('at_key_moment'))}° @ {fmt(right_knee.get('time_at_key_moment'), 1)}s)
 """
             else:
                 # Fallback to legacy fields
@@ -2157,33 +2169,34 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
             left_hip = pose_data.get('left_hip', {})
             right_hip = pose_data.get('right_hip', {})
             if left_hip or right_hip:
-                prompt += f"""- Left Hip: {left_hip.get('min', 'N/A'):.0f}° - {left_hip.get('max', 'N/A'):.0f}°
-- Right Hip: {right_hip.get('min', 'N/A'):.0f}° - {right_hip.get('max', 'N/A'):.0f}°
-- **HIP DROP DETECTED: {'✅ YES' if pose_data.get('hip_drop_detected') else '❌ NO'}** (max diff: {pose_data.get('max_hip_angle_difference', 0):.1f}°)
+                prompt += f"""- Left Hip: {fmt(left_hip.get('min'))}° - {fmt(left_hip.get('max'))}°
+- Right Hip: {fmt(right_hip.get('min'))}° - {fmt(right_hip.get('max'))}°
+- **HIP DROP DETECTED: {'✅ YES' if pose_data.get('hip_drop_detected') else '❌ NO'}** (max diff: {fmt(pose_data.get('max_hip_angle_difference', 0), 1)}°)
 """
 
             # === Shoulder Angles ===
             left_shoulder = pose_data.get('left_shoulder', {})
             right_shoulder = pose_data.get('right_shoulder', {})
             if left_shoulder.get('min', 180) < 180 or right_shoulder.get('min', 180) < 180:
-                prompt += f"""- Left Shoulder ROM: {left_shoulder.get('min', 'N/A'):.0f}° - {left_shoulder.get('max', 'N/A'):.0f}°
-- Right Shoulder ROM: {right_shoulder.get('min', 'N/A'):.0f}° - {right_shoulder.get('max', 'N/A'):.0f}°
+                prompt += f"""- Left Shoulder ROM: {fmt(left_shoulder.get('min'))}° - {fmt(left_shoulder.get('max'))}°
+- Right Shoulder ROM: {fmt(right_shoulder.get('min'))}° - {fmt(right_shoulder.get('max'))}°
 """
 
             # === Back Angle (for plank) ===
             back_angle = pose_data.get('back_angle', {})
             if back_angle.get('min', 180) < 180:
-                prompt += f"""- Back/Spine Angle: {back_angle.get('min', 'N/A'):.0f}° - {back_angle.get('max', 'N/A'):.0f}° (current: {back_angle.get('current', 'N/A'):.0f}°)
+                prompt += f"""- Back/Spine Angle: {fmt(back_angle.get('min'))}° - {fmt(back_angle.get('max'))}° (current: {fmt(back_angle.get('current'))}°)
 """
 
             # === Exercise Detection ===
             if pose_data.get('exercise_detected'):
-                prompt += f"""- **EXERCISE DETECTED: ✅ YES** (count: {pose_data.get('exercise_count', 0)}, {pose_data.get('exercise_position_percentage', 0):.0f}% of frames in position)
-- **ESTIMATED HOLD DURATION: {pose_data.get('estimated_hold_duration', 0):.1f}s**
+                prompt += f"""- **EXERCISE DETECTED: ✅ YES** (count: {pose_data.get('exercise_count', 0)}, {fmt(pose_data.get('exercise_position_percentage', 0))}% of frames in position)
+- **ESTIMATED HOLD DURATION: {fmt(pose_data.get('estimated_hold_duration', 0), 1)}s**
 """
 
             # === General Data ===
-            prompt += f"""- Person detection: {pose_data.get('person_detection_rate', 0) * 100:.0f}%
+            detection_rate = pose_data.get('person_detection_rate', 0)
+            prompt += f"""- Person detection: {fmt(detection_rate * 100 if detection_rate else 0)}%
 - Key moment at: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s
 """
 
