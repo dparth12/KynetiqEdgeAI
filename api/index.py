@@ -2228,7 +2228,9 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
     "<body area needing work>"
   ],
   "exercise_specific_data": {{
-    // Include relevant data like touch_count for CKCUEST, hold_duration for plank/balance
+    "touch_count": <integer or null>,
+    "hold_duration": <number in seconds or null>,
+    "fist_distance_hand_lengths": <number or null>
   }},
   "summary": "<2-3 sentences summarizing the assessment and justifying the score>"
 }}
@@ -2239,6 +2241,7 @@ Analyze this {exercise_config['name']} assessment and provide a detailed evaluat
 3. If multiple views provided, synthesize observations from all views
 4. For bilateral exercises (balance, lunge), comment on symmetry between left and right
 5. Output ONLY valid JSON
+6. All numeric values in exercise_specific_data must be plain numbers (e.g., 0.6 not "0.6s")
 
 Respond with ONLY the JSON object.
 """
