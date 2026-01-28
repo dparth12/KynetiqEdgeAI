@@ -1570,7 +1570,7 @@ Use the SENSOR DATA for depth assessment, your visual analysis for everything el
 **Score 0 (Pain):**
 - Reports pain during movement
 """,
-        "observations_keys": ["depth", "torsoAngle", "heelContact", "kneeTracking", "armPosition", "overallControl"]
+        "observations_keys": ["depth", "torso", "heels", "knees", "arms", "overall"]
     },
     
     "single_leg_balance": {
@@ -1630,7 +1630,7 @@ IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
 
 ASYMMETRY FLAG: If one leg holds significantly longer (>5 sec difference) or shows notably worse hip drop, flag this in your assessment.
 """,
-        "observations_keys": ["holdDurationLeft", "holdDurationRight", "hipDropLeft", "hipDropRight", "stability", "trunkPosition", "symmetry", "asymmetryFlag"]
+        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration", "symmetry", "leftLeg", "rightLeg", "overall"]
     },
     
     "inline_lunge": {
@@ -1692,7 +1692,7 @@ IMPORTANT: Compare LEFT vs RIGHT leg forward performance and note any asymmetrie
 
 ASYMMETRY FLAG: Note if one side shows significantly worse performance (more compensation, less control).
 """,
-        "observations_keys": ["trunkPosition", "frontHeelContact", "backKneePosition", "kneeTracking", "balance", "lineAlignment", "symmetry", "leftLegNotes", "rightLegNotes"]
+        "observations_keys": ["alignment", "kneeTracking", "balance", "trunkPosition", "symmetry", "leftLeg", "rightLeg", "overall"]
     },
     
     "plank": {
@@ -1751,7 +1751,7 @@ DURATION ASSESSMENT:
 - Pain reported
 - Cannot get into or maintain position at all
 """,
-        "observations_keys": ["holdDuration", "spineAlignment", "hipPosition", "rotation", "stability", "formBreakdownTime"]
+        "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "stability", "overall"]
     },
     
     "shoulder_mobility": {
@@ -1790,7 +1790,7 @@ Use the shoulder angle data to inform your assessment of ROM achieved.
 **Score 0 (Pain):**
 - Pain during attempt
 """,
-        "observations_keys": ["fistDistance", "shoulderRange", "overall"]
+        "observations_keys": ["fistDistance", "shoulderRange", "symmetry", "overall"]
     },
     
     "ckcuest": {
@@ -1846,7 +1846,7 @@ COUNT THE TOTAL VALID TOUCHES IN THE 15-SECOND VIDEO.
 NOTE: If gender is not specified, use male thresholds as default.
 Reference: Healthy young men average ~26 ± 4.5 touches; women ~22 ± 2.5 touches.
 """,
-        "observations_keys": ["touchCount", "bodyPosition", "hipRotation", "formQuality"]
+        "observations_keys": ["touchCount", "bodyPosition", "hipRotation", "overall"]
     },
 
     "step_down_anterior": {
@@ -1914,7 +1914,7 @@ FROM SIDE VIEW: Trunk angle, stance foot stability, movement control
 **Score 0 (Pain):**
 - Reports pain during test
 """,
-        "observations_keys": ["kneeAlignment", "valgusAngle", "trunkPosition", "stanceFootStability", "pelvisControl", "movementQuality", "leftLeg", "rightLeg"]
+        "observations_keys": ["kneeTracking", "hipDrop", "trunkPosition", "stability", "leftLeg", "rightLeg", "overall"]
     },
 
     "step_down_lateral": {
@@ -1979,7 +1979,7 @@ FROM FRONT VIEW: Knee tracking, pelvis level, trunk position, overall control
 **Score 0 (Pain):**
 - Pain reported during test
 """,
-        "observations_keys": ["kneeAlignment", "valgusAngle", "hipDrop", "trunkPosition", "stanceFootStability", "movementControl", "leftLeg", "rightLeg"]
+        "observations_keys": ["kneeTracking", "hipDrop", "trunkPosition", "stability", "leftLeg", "rightLeg", "overall"]
     }
 }
 
