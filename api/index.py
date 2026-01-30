@@ -1847,140 +1847,8 @@ NOTE: If gender is not specified, use male thresholds as default.
 Reference: Healthy young men average ~26 ± 4.5 touches; women ~22 ± 2.5 touches.
 """,
         "observations_keys": ["touchCount", "bodyPosition", "hipRotation", "overall"]
-    },
-
-    "step_down_anterior": {
-        "name": "Step Down Anterior",
-        "category": "lower_fms",
-        "focus_areas": """
-Analyze the ANTERIOR (forward) step down from FRONT and SIDE views:
-
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE measurements:
-- **left_knee** and **right_knee**: Angle tracking during descent
-- **left_hip** and **right_hip**: Hip angles for pelvis control
-- **hip_drop_detected**: TRUE if >10° difference between hip angles
-- **max_hip_angle_difference**: Maximum hip asymmetry detected
-
-TRUST this data for hip drop and knee angle assessment.
-
-The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground in FRONT of the box.
-
-YOUR visual analysis should assess:
-1. **Knee Alignment** - CRITICAL: Watch from FRONT view
-   - Knee should track over 2nd/3rd toe
-   - Valgus (knee collapsing inward) = major fault
-   - Varus (knee bowing outward) = compensation
-   - Use knee angle data to confirm deviation
-
-2. **Trunk Position** - Should remain UPRIGHT
-   - Watch from SIDE view for forward lean
-
-3. **Stance Foot Stability** - Must remain FLAT and STABLE
-   - Heel lift = fault
-   - Foot movement/rotation = instability
-
-4. **Pelvis Control** - Use hip_drop_detected and max_hip_angle_difference data
-   - Hip drop on non-stance side = glute weakness
-
-5. **Movement Control** - Smooth, controlled descent
-
-FROM FRONT VIEW: Knee tracking, valgus/varus angle, pelvis level
-FROM SIDE VIEW: Trunk angle, stance foot stability, movement control
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- Smooth controlled descent throughout
-- Stance foot remains flat and stable (no movement)
-- Knee aligned with 2nd toe (no valgus/varus)
-- Trunk upright
-- Pelvis level (no hip drop)
-- Can tap heel without collapsing
-
-**Score 2 (Compensated):**
-- Minor trunk lean (<10°)
-- Mild knee valgus/varus (<10°)
-- Slight heel lift or foot wobble
-- Minor hip drop
-
-**Score 1 (Dysfunctional):**
-- Major knee valgus (>10°) - knee collapses inward
-- Trunk lean >15°
-- Repeated loss of balance
-- Cannot tap heel without collapsing/weight bearing
-- Significant stance foot movement
-- Major hip drop
-
-**Score 0 (Pain):**
-- Reports pain during test
-""",
-        "observations_keys": ["kneeTracking", "hipDrop", "trunkPosition", "stability", "leftLeg", "rightLeg", "overall"]
-    },
-
-    "step_down_lateral": {
-        "name": "Step Down Lateral",
-        "category": "lower_fms",
-        "focus_areas": """
-Analyze the LATERAL (sideways) step down from FRONT view:
-
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE measurements:
-- **left_knee** and **right_knee**: Angle tracking for valgus/varus assessment
-- **left_hip** and **right_hip**: Hip angles for pelvis level assessment
-- **hip_drop_detected**: TRUE if >10° difference between hip angles (Trendelenburg sign)
-- **max_hip_angle_difference**: Maximum hip asymmetry detected (degrees)
-
-TRUST this data for hip drop and knee angle assessment.
-If hip_drop_detected is TRUE → indicates glute medius weakness.
-
-The athlete stands on an elevated surface (box/step) and slowly lowers the opposite foot toward the ground to the SIDE of the box.
-
-YOUR visual analysis should assess:
-1. **Knee Alignment** - CRITICAL: Watch for valgus/varus
-   - Knee should track over toes
-   - Use knee angle data to quantify deviation
-
-2. **Pelvis/Hip Control** - Use hip_drop_detected data
-   - Pelvis should stay LEVEL
-   - Hip drop = Trendelenburg sign = glute medius weakness
-
-3. **Trunk Position** - Should remain UPRIGHT
-   - Lateral trunk lean = compensation for hip weakness
-
-4. **Stance Foot Stability**
-   - Foot should remain flat, no heel lift
-
-5. **Movement Control**
-   - Smooth, controlled descent
-
-FROM FRONT VIEW: Knee tracking, pelvis level, trunk position, overall control
-""",
-        "scoring": """
-**Score 3 (Optimal):**
-- Controlled descent throughout
-- Stance foot flat and stable
-- Knee tracks over toes (no valgus/varus)
-- Pelvis stays LEVEL (no hip drop)
-- Trunk upright (no lateral lean)
-
-**Score 2 (Compensated):**
-- Minor trunk lean (<10°)
-- Slight hip drop (<10°)
-- Mild knee valgus (<10°)
-- Minor wobble but maintains control
-
-**Score 1 (Dysfunctional):**
-- Significant knee valgus/hip drop (>10°)
-- Trunk lean >15°
-- Repeated loss of balance
-- Cannot control descent
-- Stance foot lifts or moves
-
-**Score 0 (Pain):**
-- Pain reported during test
-""",
-        "observations_keys": ["kneeTracking", "hipDrop", "trunkPosition", "stability", "leftLeg", "rightLeg", "overall"]
     }
+    # Step down tests removed per feedback
 }
 
 
@@ -2526,24 +2394,22 @@ def create_app():
         """List all supported exercises."""
         return jsonify({
             "lower_fms": [
-                {"id": "functional_squat", "name": "Functional Squat", "views": 2},
-                {"id": "single_leg_balance", "name": "Single Leg Balance", "views": 4},
-                {"id": "inline_lunge", "name": "In-Line Lunge", "views": 4},
-                {"id": "plank", "name": "Plank", "views": 1},
-                {"id": "step_down_anterior", "name": "Step Down Anterior", "views": 2},
-                {"id": "step_down_lateral", "name": "Step Down Lateral", "views": 1}
+                {"id": "functional_squat", "name": "Functional Squat", "views": 2, "mode": "rep_based", "reps": 3},
+                {"id": "single_leg_balance", "name": "Single Leg Balance", "views": 4, "mode": "timed"},
+                {"id": "inline_lunge", "name": "In-Line Lunge", "views": 4, "mode": "rep_based", "reps": 3}
             ],
             "upper_fms": [
-                {"id": "shoulder_mobility", "name": "Shoulder Mobility (IR/ER)", "views": 1},
-                {"id": "ckcuest", "name": "CKCUEST", "views": 1}
+                {"id": "plank", "name": "Plank", "views": 1, "mode": "timed"},
+                {"id": "shoulder_mobility", "name": "Shoulder Mobility (IR/ER)", "views": 2, "mode": "timed"},
+                {"id": "ckcuest", "name": "CKCUEST", "views": 1, "mode": "timed"}
             ]
         })
-    
+
     @app.get("/")
     def root():
         return jsonify({
             "service": "KynetiqEdge FMS Analysis API",
-            "version": "3.2-optimized-bilateral",
+            "version": "3.3-updated",
             "model": MODEL,
             "endpoints": {
                 "GET /": "API info",
@@ -2554,15 +2420,13 @@ def create_app():
             },
             "supported_exercises": {
                 "lower_fms": [
-                    "functional_squat (2 views: front, side)",
+                    "functional_squat (2 views: front, side) - 3 reps",
                     "single_leg_balance (4 views: front L, side L, front R, side R)",
-                    "inline_lunge (4 views: front L, side L, front R, side R)",
-                    "plank (1 view: side)",
-                    "step_down_anterior (2 views: front, side)",
-                    "step_down_lateral (1 view: front)"
+                    "inline_lunge (4 views: front L, side L, front R, side R) - 3 reps"
                 ],
                 "upper_fms": [
-                    "shoulder_mobility (1 view: back)",
+                    "plank (1 view: side)",
+                    "shoulder_mobility (2 views: back L arm up, back R arm up)",
                     "ckcuest (1 view: front)"
                 ]
             }
