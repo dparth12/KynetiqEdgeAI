@@ -1485,7 +1485,7 @@ File: api/index.py (Vercel deployment structure)
 
 Supports all FMS exercises:
 - Lower: Functional Squat, Single Leg Balance (combined L/R), In-Line Lunge (combined L/R), Plank
-- Upper: Shoulder Mobility, CKCUEST
+- Upper: Shoulder Mobility, Push-Ups
 """
 
 import os
@@ -1723,25 +1723,28 @@ YOUR visual analysis should confirm and assess:
 5. **Stability** - Steady hold vs shaking/trembling
 
 DURATION ASSESSMENT:
-- Use **estimated_hold_duration** from sensor data
-- Note when form starts to break down visually
-- If back_angle deviation is significant, form is compromised
+- The video shows the ENTIRE recording duration (typically 30 seconds for plank)
+- If the person maintains plank position throughout the video, they held for the full duration
+- Only use **estimated_hold_duration** from sensor data if it seems accurate
+- If sensor data shows low duration but video shows continuous plank hold, TRUST THE VIDEO
+- Note when form visually breaks down (if at all)
+- The recording duration IS the hold duration unless you see them break position
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Holds ≥60 seconds WITH good form
+- Holds for the FULL recording duration (30 seconds) WITH good form
 - Spine neutral throughout (straight line head to heels)
 - No hip drop >10°
 - No rotation
 - Minimal trembling
 
 **Score 2 (Acceptable):**
-- Holds 30-59 seconds with good form
-- OR holds longer but with minor sway/mild compensation
+- Holds 15-29 seconds with good form
+- OR holds full duration but with minor sway/mild compensation
 - Slight hip position changes acceptable
 
 **Score 1 (Dysfunctional):**
-- Holds <30 seconds before form breaks down
+- Holds <15 seconds before form breaks down
 - Significant hip sag or pike
 - Significant sway, hip drop >10°, or rotation
 - Needs multiple corrections to maintain position
@@ -1793,60 +1796,58 @@ Use the shoulder angle data to inform your assessment of ROM achieved.
         "observations_keys": ["fistDistance", "shoulderRange", "symmetry", "overall"]
     },
     
-    "ckcuest": {
-        "name": "CKCUEST (Closed Kinetic Chain Upper Extremity Stability Test)",
+    "pushups": {
+        "name": "Push-Ups",
         "category": "upper_fms",
         "focus_areas": """
-Analyze the push-up position cross-body touches from FRONT VIEW:
+Analyze traditional push-ups from SIDE VIEW:
 
 ## USING QUICKPOSE SENSOR DATA
 The pose detection provides:
 - **exercise_detected**: TRUE if push-up position was detected
-- **exercise_count**: Number of movement repetitions detected by sensor
-- **exercise_position_percentage**: % of time in proper push-up position
+- **exercise_count**: Number of push-up repetitions detected by sensor
 
-NOTE: The sensor counts may not perfectly match valid touches (it detects any movement cycles).
-Use this as a REFERENCE but your visual count of VALID touches is the final authority.
+Use this as a REFERENCE but your visual count of VALID push-ups is the final authority.
 
-YOUR visual analysis must count:
-1. **Touch count** - Count VALID cross-body touches (hand clearly crosses midline to touch opposite hand)
-2. **Body position** - Must maintain straight line from head to heels throughout
-3. **Hip rotation** - Must be <15° rotation/sag to count as valid
-4. **Control** - Stable base, no excessive swaying
-5. **Landing quality** - Controlled return to start position
+YOUR visual analysis must assess:
+1. **Rep count** - Count VALID push-ups (full range of motion)
+2. **Body position** - Must maintain straight line from head to heels (neutral trunk)
+3. **Depth** - Chest should lower close to the ground
+4. **Full extension** - Arms fully extended at top of each rep
+5. **Control** - Steady tempo, no bouncing or jerking
+6. **Type** - Note if performing full push-ups or knee push-ups
 
 VALIDITY RULES:
-- Valid rep = one hand clearly crosses midline to touch the opposite hand
-- Body must stay in straight line (hips <15° rotation/sag)
-- If hips rotate >15° or sag significantly, that rep is INVALID
+- Valid rep = chest lowers near ground AND arms fully extend
+- Body must stay in straight line (neutral trunk)
+- If significant hip sag or pike, note form breakdown
 
-COUNT THE TOTAL VALID TOUCHES IN THE 15-SECOND VIDEO.
+COUNT THE TOTAL VALID PUSH-UPS IN THE VIDEO (60 seconds).
 """,
         "scoring": """
-**Score 3 (Optimal):**
-- MEN: ≥26 valid touches in 15 seconds
-- WOMEN: ≥22 valid touches in 15 seconds
-- Body maintains straight line throughout
-- Minimal hip rotation (<15°)
+**Score 3 (Optimal - Full Push-Ups, Good Control):**
+- ≥15 reps (men) / ≥10 reps (women)
+- Neutral trunk maintained throughout
+- Full range of motion
+- Good control
 
-**Score 2 (Acceptable):**
-- MEN: 22-25 valid touches in 15 seconds
-- WOMEN: 18-21 valid touches in 15 seconds
-- Minor form breakdown acceptable
+**Score 2 (Acceptable - Full Push-Ups, Limited Volume):**
+- 5-14 reps (men) / 3-9 reps (women)
+- Full push-ups with acceptable form
+- Minor form breaks acceptable
 
-**Score 1 (Dysfunctional):**
-- MEN: <22 valid touches in 15 seconds
-- WOMEN: <18 valid touches in 15 seconds
-- Significant form breakdown
-- Large asymmetry between sides
+**Score 1 (Limited - Knee Push-Ups Only):**
+- ≥5 knee push-ups with good control
+- Cannot perform full push-ups
+- Or very few full push-ups (<5)
 
 **Score 0 (Pain/Unable):**
+- <5 knee push-ups
 - Unable to perform or pain reported
 
 NOTE: If gender is not specified, use male thresholds as default.
-Reference: Healthy young men average ~26 ± 4.5 touches; women ~22 ± 2.5 touches.
 """,
-        "observations_keys": ["touchCount", "bodyPosition", "hipRotation", "overall"]
+        "observations_keys": ["repCount", "bodyPosition", "depth", "control", "overall"]
     }
     # Step down tests removed per feedback
 }
@@ -2401,7 +2402,7 @@ def create_app():
             "upper_fms": [
                 {"id": "plank", "name": "Plank", "views": 1, "mode": "timed"},
                 {"id": "shoulder_mobility", "name": "Shoulder Mobility (IR/ER)", "views": 2, "mode": "timed"},
-                {"id": "ckcuest", "name": "CKCUEST", "views": 1, "mode": "timed"}
+                {"id": "pushups", "name": "Push-Ups", "views": 1, "mode": "timed"}
             ]
         })
 
@@ -2427,7 +2428,7 @@ def create_app():
                 "upper_fms": [
                     "plank (1 view: side)",
                     "shoulder_mobility (2 views: back L arm up, back R arm up)",
-                    "ckcuest (1 view: front)"
+                    "pushups (1 view: left side)"
                 ]
             }
         })
