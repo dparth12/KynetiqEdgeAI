@@ -1697,62 +1697,56 @@ ASYMMETRY FLAG: Note if one side shows significantly worse performance (more com
     
     "plank": {
         "name": "Plank",
-        "category": "lower_fms",
+        "category": "upper_fms",
         "focus_areas": """
 Analyze the plank hold from SIDE VIEW:
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE measurements:
-- **exercise_detected**: TRUE if plank position was detected by the sensor
-- **exercise_position_percentage**: % of frames where plank position was held
-- **estimated_hold_duration**: Estimated hold time based on frames in position
-- **back_angle**: Spine/back angle measurements (min, max, current)
-  - Back angle near 180° = perfectly straight spine
-  - Back angle <160° = significant sag or pike
+## FOCUS: CONSISTENT HOLD
+The main goal is to assess if the person can HOLD a plank position consistently.
+Minor adjustments and small movements are NORMAL and should NOT be penalized.
 
-TRUST THIS DATA for duration and spine angle baseline.
-The estimated_hold_duration tells you how long good form was maintained.
+## WHAT TO LOOK FOR
+1. **Consistent hold** - Did they maintain the position throughout?
+2. **General body line** - Roughly straight from head to heels (doesn't need to be perfect)
+3. **Major breakdowns** - Did they collapse, drop to knees, or completely lose position?
 
-YOUR visual analysis should confirm and assess:
-1. **Spine alignment** - Must be NEUTRAL (straight line from head to heels)
-   - No excessive lordosis (lower back sag/arch)
-   - No kyphosis (upper back rounding)
-2. **Hip position** - Watch for hip drop (sag) or piking (hips too high)
-3. **Head position** - Should be neutral, in line with spine
-4. **Rotation** - Body should stay square, no twisting
-5. **Stability** - Steady hold vs shaking/trembling
+## WHAT TO IGNORE (Don't penalize)
+- Small adjustments or shifts
+- Minor trembling (this is normal under load)
+- Slight head movements
+- Small hip position changes
+- Not having "perfect" form
 
-DURATION ASSESSMENT:
-- The video shows the ENTIRE recording duration (typically 30 seconds for plank)
-- If the person maintains plank position throughout the video, they held for the full duration
-- Only use **estimated_hold_duration** from sensor data if it seems accurate
-- If sensor data shows low duration but video shows continuous plank hold, TRUST THE VIDEO
-- Note when form visually breaks down (if at all)
-- The recording duration IS the hold duration unless you see them break position
+## DURATION ASSESSMENT
+- The video shows the ENTIRE recording (30 seconds)
+- If they maintain plank throughout = full 30 seconds
+- Only note duration if they visibly break/collapse mid-way
+- Trust the video over sensor data for duration
 """,
         "scoring": """
 **Score 3 (Optimal):**
-- Holds for the FULL recording duration (30 seconds) WITH good form
-- Spine neutral throughout (straight line head to heels)
-- No hip drop >10°
-- No rotation
-- Minimal trembling
+- Holds consistently for the FULL 30 seconds
+- Maintains general straight body line
+- Minor adjustments are fine
+- No major collapse or hip drop to the floor
 
 **Score 2 (Acceptable):**
-- Holds 15-29 seconds with good form
-- OR holds full duration but with minor sway/mild compensation
-- Slight hip position changes acceptable
+- Holds 20-29 seconds before needing to stop
+- OR holds full duration with noticeable but acceptable form variations
+- Some hip sag or pike but still maintaining position
+- Generally holds the position
 
 **Score 1 (Dysfunctional):**
-- Holds <15 seconds before form breaks down
-- Significant hip sag or pike
-- Significant sway, hip drop >10°, or rotation
-- Needs multiple corrections to maintain position
-- Cannot maintain straight body line
+- Holds <20 seconds before breaking position
+- Significant hip collapse (hips nearly touching ground)
+- Cannot maintain any consistent hold
+- Has to restart or take breaks
 
 **Score 0 (Pain):**
 - Pain reported
-- Cannot get into or maintain position at all
+- Cannot get into plank position at all
+
+BE GENEROUS: If the person is clearly trying and maintaining a plank position for the full time, even with imperfect form, lean toward Score 3 or 2.
 """,
         "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "stability", "overall"]
     },
@@ -1800,52 +1794,52 @@ Use the shoulder angle data to inform your assessment of ROM achieved.
         "name": "Push-Ups",
         "category": "upper_fms",
         "focus_areas": """
-Analyze traditional push-ups from SIDE VIEW:
+Analyze push-ups from SIDE VIEW:
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides:
-- **exercise_detected**: TRUE if push-up position was detected
-- **exercise_count**: Number of push-up repetitions detected by sensor
+## FOCUS: COUNT REPS
+The main goal is to COUNT how many push-ups the person completes.
+Side view lets you see depth and body position clearly.
 
-Use this as a REFERENCE but your visual count of VALID push-ups is the final authority.
+## WHAT TO COUNT
+1. **Rep count** - Count push-ups where chest lowers and arms extend
+2. **Type** - Note if full push-ups (toes) or knee push-ups (knees on ground)
 
-YOUR visual analysis must assess:
-1. **Rep count** - Count VALID push-ups (full range of motion)
-2. **Body position** - Must maintain straight line from head to heels (neutral trunk)
-3. **Depth** - Chest should lower close to the ground
-4. **Full extension** - Arms fully extended at top of each rep
-5. **Control** - Steady tempo, no bouncing or jerking
-6. **Type** - Note if performing full push-ups or knee push-ups
+## FORM ASSESSMENT (Secondary)
+- Look for generally straight body line (neutral trunk)
+- Don't be too strict - minor form variations are acceptable
+- Focus more on REP COUNT than perfect form
 
-VALIDITY RULES:
-- Valid rep = chest lowers near ground AND arms fully extend
-- Body must stay in straight line (neutral trunk)
-- If significant hip sag or pike, note form breakdown
+## COUNTING RULES
+- Count any rep where chest visibly lowers toward ground
+- Count any rep where arms extend back up
+- Be GENEROUS with counting - if it looks like a push-up, count it
+- Note if they switch from full to knee push-ups mid-way
 
-COUNT THE TOTAL VALID PUSH-UPS IN THE VIDEO (60 seconds).
+User will tap STOP when done - count all reps in the video.
 """,
         "scoring": """
-**Score 3 (Optimal - Full Push-Ups, Good Control):**
+**Score 3 - Full Push-Ups (Good Control):**
 - ≥15 reps (men) / ≥10 reps (women)
-- Neutral trunk maintained throughout
-- Full range of motion
-- Good control
+- Full push-ups (on toes)
+- Neutral trunk generally maintained
 
-**Score 2 (Acceptable - Full Push-Ups, Limited Volume):**
+**Score 2 - Full Push-Ups (Limited Volume):**
 - 5-14 reps (men) / 3-9 reps (women)
-- Full push-ups with acceptable form
-- Minor form breaks acceptable
+- Full push-ups performed
+- Form doesn't need to be perfect
 
-**Score 1 (Limited - Knee Push-Ups Only):**
-- ≥5 knee push-ups with good control
+**Score 1 - Knee Push-Ups Only:**
+- ≥5 knee push-ups with reasonable control
 - Cannot perform full push-ups
-- Or very few full push-ups (<5)
+- Or fewer than 5 full push-ups
 
-**Score 0 (Pain/Unable):**
-- <5 knee push-ups
-- Unable to perform or pain reported
+**Score 0 - Unable / Pain:**
+- <5 knee push-ups total
+- Pain reported
+- Cannot perform push-ups
 
-NOTE: If gender is not specified, use male thresholds as default.
+DEFAULT: If gender unknown, use male thresholds.
+BE GENEROUS with rep counting - focus on effort and reps completed.
 """,
         "observations_keys": ["repCount", "bodyPosition", "depth", "control", "overall"]
     }
