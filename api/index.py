@@ -1490,10 +1490,9 @@ Supports all FMS exercises:
 
 import os
 import base64
-import tempfile
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
+import google.generativeai as genai
 import json
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -1501,13 +1500,8 @@ from typing import Dict, Optional, List, Tuple
 # ============================================================
 # CONFIG & SETUP
 # ============================================================
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-# Optimized for faster processing (Vercel timeout considerations)
-DEFAULT_FRAME_COUNT = 3  # Reduced from 5 for faster API response
-MAX_FRAME_DIMENSION = 512  # Reduced from 768 for smaller payloads
-JPEG_QUALITY = 60  # Reduced from 75 for smaller file sizes
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 
 # ============================================================
@@ -1848,84 +1842,6 @@ BE GENEROUS with rep counting - focus on effort and reps completed.
 
 
 # ============================================================
-# FRAME EXTRACTION
-# ============================================================
-
-def get_video_info(video_path: str) -> Tuple[float, float, int]:
-    import cv2
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps if fps > 0 else 0
-    cap.release()
-    return duration, fps, total_frames
-
-
-def extract_frames_from_video(
-    video_base64: str,
-    pose_data: Optional[Dict] = None,
-    num_frames: int = DEFAULT_FRAME_COUNT
-) -> Tuple[List[str], List[float]]:
-    """Extract frames with intelligent sampling if pose data available."""
-    import cv2
-    
-    video_bytes = base64.b64decode(video_base64)
-    
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
-        tmp_file.write(video_bytes)
-        tmp_path = tmp_file.name
-    
-    try:
-        duration, fps, total_frames = get_video_info(tmp_path)
-        
-        if total_frames == 0 or fps == 0:
-            raise ValueError("Could not read video properties")
-        
-        # Calculate timestamps
-        if pose_data and pose_data.get('time_at_deepest_point_seconds'):
-            deepest_time = pose_data['time_at_deepest_point_seconds']
-            timestamps = [
-                min(0.3, duration * 0.05),
-                (0.3 + deepest_time) / 2,
-                deepest_time,
-                min(deepest_time + 0.3, duration - 0.2),
-                (deepest_time + duration) / 2,
-                max(duration - 0.3, duration * 0.95)
-            ]
-        else:
-            # Uniform sampling
-            timestamps = [duration * p for p in [0.1, 0.3, 0.5, 0.7, 0.9]]
-        
-        timestamps = sorted(set(max(0, min(t, duration - 0.1)) for t in timestamps))[:num_frames]
-        
-        # Extract frames
-        cap = cv2.VideoCapture(tmp_path)
-        frames = []
-        extracted_timestamps = []
-        
-        for ts in timestamps:
-            frame_number = int(ts * fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            ret, frame = cap.read()
-            
-            if ret:
-                height, width = frame.shape[:2]
-                if max(height, width) > MAX_FRAME_DIMENSION:
-                    scale = MAX_FRAME_DIMENSION / max(height, width)
-                    frame = cv2.resize(frame, (int(width * scale), int(height * scale)))
-                
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-                frames.append(base64.b64encode(buffer).decode('utf-8'))
-                extracted_timestamps.append(ts)
-        
-        cap.release()
-        return frames, extracted_timestamps
-        
-    finally:
-        os.unlink(tmp_path)
-
-
-# ============================================================
 # PROMPT BUILDING
 # ============================================================
 
@@ -2135,27 +2051,13 @@ def analyze_exercise(
     pose_data_list: List[Dict],
     reported_pain: bool = False,
     scoring_criteria: Optional[Dict] = None,
-    side: Optional[str] = None
+    side: Optional[str] = None,
+    mime_type: str = "video/mp4"
 ) -> Dict:
-    """Analyze exercise video(s) using GPT-4o."""
+    """Analyze exercise video(s) using Gemini with native video understanding."""
     try:
-        # Extract frames from each video
-        all_frames = []
-        all_timestamps = []
-        frame_view_labels = []
-        
-        for i, video_b64 in enumerate(videos_base64):
-            pose_data = pose_data_list[i] if i < len(pose_data_list) else None
-            frames, timestamps = extract_frames_from_video(video_b64, pose_data)
-            
-            view_label = view_types[i] if i < len(view_types) else f"view_{i+1}"
-            for j, (frame, ts) in enumerate(zip(frames, timestamps)):
-                all_frames.append(frame)
-                all_timestamps.append(ts)
-                frame_view_labels.append(f"{view_label.replace('_', ' ').title()} @ {ts:.2f}s")
-        
-        print(f"Total frames for analysis: {len(all_frames)}")
-        
+        model = genai.GenerativeModel(MODEL)
+
         # Build prompt
         prompt = build_exercise_prompt(
             exercise_type,
@@ -2165,37 +2067,28 @@ def analyze_exercise(
             scoring_criteria,
             side
         )
-        
+
         if reported_pain:
             prompt += "\n\n⚠️ USER REPORTED PAIN: Score MUST be 0 regardless of movement quality."
-        
-        # Build message content
-        content = [{"type": "text", "text": prompt}]
-        
-        for i, (frame_b64, label) in enumerate(zip(all_frames, frame_view_labels)):
+
+        # Build content with videos directly (no frame extraction needed)
+        content = [prompt]
+
+        for i, video_b64 in enumerate(videos_base64):
+            view_label = view_types[i] if i < len(view_types) else f"view_{i+1}"
+            content.append(f"\n[Video {i+1}: {view_label.replace('_', ' ').title()}]")
             content.append({
-                "type": "text",
-                "text": f"[Frame {i+1}: {label}]"
+                "mime_type": mime_type,
+                "data": video_b64
             })
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{frame_b64}",
-                    "detail": "low"  # Use low detail for faster processing
-                }
-            })
-        
-        # Call GPT-4o
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=2500,
-            temperature=0.3
-        )
-        
-        response_text = response.choices[0].message.content.strip()
-        
-        # Clean up response
+
+        print(f"Sending {len(videos_base64)} video(s) to Gemini for analysis")
+
+        # Call Gemini with native video understanding
+        response = model.generate_content(content)
+        response_text = response.text.strip()
+
+        # Clean up response (extract JSON from markdown if needed)
         if '```' in response_text:
             lines = response_text.split('\n')
             json_lines = []
@@ -2211,25 +2104,25 @@ def analyze_exercise(
                     json_lines.append(line)
             if json_lines:
                 response_text = '\n'.join(json_lines)
-        
+
         if not response_text.startswith('{'):
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}')
             if start_idx != -1 and end_idx != -1:
                 response_text = response_text[start_idx:end_idx + 1]
-        
+
         # Parse response
         analysis_result = json.loads(response_text)
-        
+
         # Validate score
         if analysis_result.get("score") not in [0, 1, 2, 3]:
             analysis_result["score"] = 2
-        
+
         return {
             "success": True,
             "analysis": analysis_result
         }
-        
+
     except json.JSONDecodeError as e:
         return {
             "success": False,
@@ -2259,7 +2152,7 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "3.2-optimized-bilateral",
+            "version": "4.0-gemini-native-video",
             "supported_exercises": list(EXERCISE_PROMPTS.keys()),
             "timestamp": datetime.now().isoformat()
         })
@@ -2267,17 +2160,13 @@ def create_app():
     @app.get("/test-connection")
     def test_connection():
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[{"role": "user", "content": "Say 'connected' and nothing else."}],
-                max_tokens=10,
-                temperature=0
-            )
+            model = genai.GenerativeModel(MODEL)
+            response = model.generate_content("Say 'connected' and nothing else.")
             return jsonify({
                 "success": True,
                 "connected": True,
                 "model": MODEL,
-                "response": response.choices[0].message.content.strip(),
+                "response": response.text.strip(),
                 "timestamp": datetime.now().isoformat()
             })
         except Exception as e:
