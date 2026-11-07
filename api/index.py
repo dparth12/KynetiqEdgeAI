@@ -18,7 +18,7 @@
 # # ============================================================
 # # CONFIG & SETUP
 # # ============================================================
-# MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+# MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")
 
 # # Configure Gemini API
 # genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -1492,7 +1492,7 @@ import os
 import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import google.generativeai as genai
+from google import genai
 import json
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -1500,344 +1500,396 @@ from typing import Dict, Optional, List, Tuple
 # ============================================================
 # CONFIG & SETUP
 # ============================================================
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) if os.environ.get("GEMINI_API_KEY") else None
 
 
 # ============================================================
-# EXERCISE-SPECIFIC PROMPTS
+# ASSESSMENT CRITERIA
+# KYNETIQ Edge Lower FMS v1.3, Upper FMS v1.0, Combined FMS v1.0
+# (3 November 2026). The AI emits compensation tags; the rules
+# below turn tags, durations and rep counts into a 0-3 score.
 # ============================================================
 
-EXERCISE_PROMPTS = {
+RULE_VERSION = "lower-1.3+upper-1.0+combined-1.0"
+
+# Engineering starting points from the specs. Keep configurable;
+# calibrate against clinician-rated videos before production.
+PERSISTENT_SECONDS = float(os.environ.get("PERSISTENT_SECONDS", "0.5"))
+
+SHARED_RULES = f"""
+## How to observe
+- You are a movement observer supporting coach review. Describe visible movement behaviour only.
+  Never name an anatomical cause, a weakness, a pathology, an injury risk or a clearance.
+- Use ONLY the compensation tags listed for this exercise. Each tag needs a severity
+  (transient, mild, moderate, major), a confidence from 0.00 to 1.00, the time it was first
+  seen in seconds from the start of the active task, and its total duration in seconds.
+- Severity: transient = brief, does not alter task completion and does not repeat.
+  mild = small, recoverable, main task criteria kept. moderate = clear and repeated but
+  controlled, task still completed. major = causes task failure, substantial alignment loss,
+  a step, touchdown, hand support, foot slide, lost support point, or inability to recover.
+- A deviation is persistent when it lasts at least {PERSISTENT_SECONDS} seconds or appears in
+  at least two of three repetitions. Transient deviations never lower the score unless they
+  cause support loss or balance failure. Persistent mild may contribute to a 2. Moderate caps
+  the exercise at 2. Major caps the exercise at 1.
+- A step, touchdown, hand support, foot slide or lost support point is an immediate major
+  event even when brief.
+- A one-frame landmark jump with stable neighbouring frames is a tracking artifact. Ignore it.
+- Do not double-penalise linked observations that arise from one event (for example hip sag
+  and lumbar extension together).
+- Never infer pain from a face, a grimace or a movement. Pain comes only from the athlete's
+  own report, which is supplied to you separately.
+- If a required landmark is occluded or outside the frame, or the required view is missing,
+  so that a primary criterion cannot be evaluated, set rateable to false with a short reason
+  and leave score null. Never score an invalid recording as a movement failure.
+- Forward knee travel beyond the toes is not a fault. Small ankle corrections during a
+  balance hold are normal and are not faults.
+- Markerless 2D video supports repeatable observation; do not present it as exact 3D
+  kinematics. The on-device joint angles supplied below are sensor data to support, not
+  replace, what you see.
+"""
+
+# Tags whose spec implication is review-only or a secondary quality flag.
+# They are reported to the coach but never cap the score by themselves.
+NON_SCORING_TAGS = {
+    "SM_SCAPULAR_BORDER_PROMINENCE", "SM_SCAPULAR_MOTION_ASYMMETRY",
+    "SM_UPPER_ELBOW_FLARE", "SM_LOWER_ELBOW_FLARE",
+    "PU_CERVICAL_EXTENSION", "PU_CERVICAL_FLEXION", "PU_SHOULDER_ELEVATION",
+    "PU_TEMPO_BREAKDOWN",
+    "PLANK_CERVICAL_EXTENSION", "PLANK_CERVICAL_FLEXION", "PLANK_SUPPORT_ASYMMETRY",
+}
+
+# "Secondary; persistent finding may cap at 2": never caps below 2.
+SECONDARY_TAGS = {"PU_FORWARD_HEAD", "PLANK_FORWARD_HEAD"}
+
+# Immediate major events regardless of the severity the model assigns.
+ALWAYS_MAJOR_TAGS = {
+    "SQUAT_BALANCE_LOSS", "SQUAT_STANCE_CHANGE",
+    "SLB_FOOT_REPOSITION", "SLB_TOUCHDOWN",
+    "LUNGE_BALANCE_LOSS", "LUNGE_STEP_OFF_LINE",
+    "PLANK_CONTACT_LOSS",
+    "SM_FOOT_REPOSITIONING",
+}
+
+# Push-up repetition validity: these invalidate a rep but do not cap by themselves.
+INVALID_REP_TAGS = {
+    "PU_TRUNK_LAG", "PU_HIP_LEAD", "PU_BODY_NOT_UNIT", "PU_INCOMPLETE_DEPTH",
+    "PU_INCOMPLETE_LOCKOUT", "PU_HAND_REPOSITIONING", "PU_FOOT_REPOSITIONING",
+    "PU_KNEE_CONTACT", "PU_CHEST_REST", "PU_REBOUND", "PU_PAUSE_FAILURE",
+}
+
+EXERCISE_CRITERIA = {
     "functional_squat": {
         "name": "Functional Squat",
         "category": "lower_fms",
-        "focus_areas": """
-Analyze the overhead deep squat from FRONT and SIDE views:
+        "mode": "reps",
+        "views": "Frontal and sagittal recordings of the same three repetitions.",
+        "focus": """
+Analyse three repetitions. Score each repetition 0-3 and report them in rep_scores; the
+exercise score is the median. Pain overrides all repetitions.
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE knee angle measurements:
-- **left_knee** and **right_knee** angles show depth achieved
-- If min knee angle <90° = excellent depth (below parallel)
-- If min knee angle 90-100° = good depth (near parallel)
-- If min knee angle >100° = insufficient depth
-- TRUST this sensor data for depth assessment
+Sagittal view (use for): depth, trunk-to-tibia relationship, heel rise, lumbopelvic position,
+balance. Frontal view (use for): knee-to-foot tracking, pelvic shift, trunk lean, asymmetry,
+foot repositioning. A frontal view must not decide depth or lumbar flexion by itself; a
+sagittal view must not decide frontal-plane knee displacement by itself.
 
-YOUR visual analysis should focus on what sensors CAN'T capture:
-1. **Torso Position** - Torso and tibia should be parallel (minimal forward lean)
-   - Measure forward lean angle from vertical
-2. **Heel Contact** - CRITICAL: Heels must stay FLAT on ground throughout
-   - Any heel lift = compensation
-3. **Knee Tracking** - Watch from FRONT view for:
-   - Valgus (knees collapsing inward)
-   - Varus (knees bowing outward)
-   - Knees should track over 2nd/3rd toe
-4. **Arm/Overhead Position** - Arms/dowel should stay overhead without dropping forward
-5. **Balance & Control** - Smooth, controlled descent and ascent
-
-FROM SIDE VIEW: Check torso angle, heel contact
-FROM FRONT VIEW: Check knee tracking (valgus/varus), balance
-Use the SENSOR DATA for depth assessment, your visual analysis for everything else.
+Trunk lean is judged relative to the tibia, never as an absolute angle from vertical: use a
+trunk inclination exceeding tibial inclination by more than 10-15 degrees as the initial mild
+range. The on-device knee angles tell you depth: a minimum knee angle below about 90 degrees
+means the hip crease passed below the knee.
 """,
+        "tags": [
+            ("SQUAT_DEPTH_LIMITED", "Hip crease does not reach approximately knee height or the femur remains above horizontal.", "Score 1 when the athlete cannot reach parallel across the scored repetitions"),
+            ("SQUAT_EXCESSIVE_TRUNK_LEAN", "Trunk becomes substantially more horizontal than the tibia.", "Score 2 when mild or moderate; score 1 when major or combined with task failure"),
+            ("SQUAT_TRUNK_TIBIA_MISMATCH", "Trunk forward inclination exceeds tibial inclination by more than the allowance.", "10 to 15 degrees is the initial mild range"),
+            ("SQUAT_HEEL_RISE", "One or both heels lose floor contact during descent or at the bottom.", "Score 2 when intermittent; score 1 when major or persistent"),
+            ("SQUAT_LUMBOPELVIC_FLEXION", "Gross posterior pelvic rotation or visible lumbar rounding near the bottom.", "Score 2 when mild; score 1 when major"),
+            ("SQUAT_LUMBOPELVIC_EXTENSION", "Excessive lumbar arching or rib flare during the repetition.", "Score 2 when persistent; score 1 when major"),
+            ("SQUAT_BALANCE_LOSS", "The athlete steps, repositions a foot, uses support, or cannot complete the repetition.", "Immediate major event and maximum score of 1"),
+            ("SQUAT_UNCONTROLLED_TEMPO", "Rapid drop, rebound, or inability to control the bottom or ascent.", "Score 2 when the task remains complete; score 1 when control is lost"),
+            ("SQUAT_KNEE_MEDIAL", "Knee centre moves clearly medial to the corresponding foot line.", "Score 2 when mild or moderate; score 1 when major and persistent"),
+            ("SQUAT_KNEE_LATERAL", "Knee centre moves excessively lateral to the corresponding foot line.", "Score 2 when mild or moderate; score 1 when major and persistent"),
+            ("SQUAT_ASYMMETRIC_KNEE_TRACKING", "One knee deviates more than the other across the same phase.", "Set asymmetry; lower score according to deviation severity"),
+            ("SQUAT_LATERAL_PELVIC_SHIFT", "Pelvic midpoint shifts noticeably toward one side.", "Score 2 when controlled; score 1 when major or with balance loss"),
+            ("SQUAT_PELVIC_OBLIQUITY", "One hip remains visibly higher than the other.", "Score 2 when persistent; score 1 when major"),
+            ("SQUAT_LATERAL_TRUNK_LEAN", "Shoulder midpoint shifts relative to the pelvic midpoint.", "Score 2 when persistent; score 1 when major"),
+            ("SQUAT_FOOT_ROTATION_CHANGE", "A foot turns substantially inward or outward from its starting orientation.", "Score 2 when repeated; score 1 when it becomes a step or major reposition"),
+            ("SQUAT_FOOT_CONTACT_LOSS", "The medial or lateral foot border visibly loses contact.", "Score 2 when intermittent; score 1 when major or persistent"),
+            ("SQUAT_STANCE_CHANGE", "A foot slides, pivots, steps, or changes stance width.", "Immediate major event when the base of support is lost"),
+        ],
         "scoring": """
-**Score 3 (Optimal):**
-- Thighs go BELOW parallel (hip crease below knee)
-- Torso and tibia parallel (minimal forward lean <10°)
-- Heels stay FLAT on ground throughout
-- Knees aligned over feet (no valgus/varus)
-- Arms/dowel maintained overhead, no forward lean
-
-**Score 2 (Compensated):**
-- Reaches parallel but with ONE OR MORE of:
-  - Heels lift off ground
-  - Torso leans forward >10-15° from vertical
-  - Mild knee valgus or varus (<10°)
-  - Arms drop forward slightly
-
-**Score 1 (Dysfunctional):**
-- Cannot reach parallel depth
-- Major loss of balance
-- Severe forward lean (>20-30°)
-- Significant knee valgus/varus (>10°)
-- Multiple compensations present
-
-**Score 0 (Pain):**
-- Reports pain during movement
+3: Hip crease reaches below knee level; heels remain grounded; trunk approximately parallel
+   with the tibia or more vertical; knees track with the feet; pelvis stays centred; feet stay
+   fixed; movement controlled; no meaningful lumbopelvic deviation or balance loss.
+2: Completes the squat to at least approximately parallel, but with one or more persistent
+   mild or moderate compensations (trunk-to-tibia mismatch, intermittent heel rise, mild knee
+   displacement, lateral shift, lumbopelvic deviation, foot-contact loss, uneven control).
+1: Cannot reach parallel, has a major or persistent compensation, steps or repositions the
+   feet, loses balance, descends without control, or shows multiple moderate compensations.
+0-NP (zero_reason "unable"): cannot safely assume the start position or initiate the squat.
 """,
-        "observations_keys": ["depth", "torso", "heels", "knees", "arms", "overall"]
+        "observations_keys": ["depth", "torso", "heels", "knees", "overall"],
     },
-    
+
     "single_leg_balance": {
-        "name": "Single Leg Balance (Both Legs)",
+        "name": "Single-Leg Balance",
         "category": "lower_fms",
-        "focus_areas": """
-Analyze BOTH legs - you will see 4 views:
-1. Front view - Left leg standing
-2. Left side view - Left leg standing
-3. Front view - Right leg standing
-4. Right side view - Right leg standing
+        "mode": "hold",
+        "hold_seconds": 20,
+        "views": "Frontal and sagittal recordings of the same hold.",
+        "focus": """
+This recording is ONE leg (the stance leg is named in the exercise title). Start the clean-hold
+clock when the non-stance foot leaves the floor. Stop it at the first touchdown, contact with the
+stance leg for support, stance-foot hop or slide, external support, or an unrecovered major
+deviation. Report that time as clean_duration_seconds (cap at the task length).
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE measurements:
-- **hip_drop_detected**: TRUE/FALSE based on >10° difference between left/right hip angles
-- **max_hip_angle_difference**: The maximum hip angle asymmetry detected (degrees)
-- **estimated_hold_duration**: Time in exercise position based on frame analysis
-- **left_hip** and **right_hip** angles throughout the movement
-
-TRUST THIS DATA for hip drop assessment. If hip_drop_detected is TRUE and max_hip_angle_difference >10°,
-the person has significant pelvic drop indicating glute medius weakness.
-
-YOUR visual analysis should confirm and add context:
-1. **Stability** - Amount of sway, wobble, or corrections needed
-2. **Trunk position** - Should be upright, not leaning to compensate
-3. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
-4. **Touch downs** - Did foot touch the ground?
-
-DURATION ASSESSMENT:
-- Use the **estimated_hold_duration** from sensor data as a baseline
-- Your visual analysis should confirm this and note when balance is LOST
-
-IMPORTANT: Compare LEFT vs RIGHT leg performance and note any asymmetries.
+Sagittal view (use for): anterior-posterior sway, trunk lean, hip and knee strategy, heel or toe
+rise. Frontal view (use for): pelvic drop or hike, mediolateral sway, trunk lean, knee alignment,
+touchdown. Normal small ankle corrections are expected and are not faults.
 """,
+        "tags": [
+            ("SLB_ANTERIOR_POSTERIOR_SWAY", "Repeated or large forward and backward displacement of the shoulders or pelvis over the stance foot.", "Score 2 when persistent but controlled; score 1 when unrecovered"),
+            ("SLB_FORWARD_TRUNK_LEAN", "Sustained forward trunk displacement rather than a generally upright position.", "Score 2 when moderate; score 1 when major"),
+            ("SLB_HIP_FLEXION_STRATEGY", "Trunk and pelvis remain flexed to maintain the hold.", "Score 2 when persistent; score 1 when it prevents control"),
+            ("SLB_KNEE_FLEXION_COLLAPSE", "The stance knee progressively bends or buckles without recovery.", "Major event when substantial or unrecovered"),
+            ("SLB_HEEL_RISE", "The stance heel repeatedly or continuously lifts.", "Score 2 when controlled; score 1 when associated with balance loss"),
+            ("SLB_TOE_RISE", "The forefoot lifts and weight shifts toward the heel.", "Score 2 when repeated; score 1 when associated with balance loss"),
+            ("SLB_FOOT_REPOSITION", "The stance foot slides, pivots, hops, or steps.", "Immediate major event and end of clean-hold time"),
+            ("SLB_TOUCHDOWN", "The non-stance foot touches the floor or stance limb.", "Immediate major event and end of clean-hold time"),
+            ("SLB_CONTRALATERAL_PELVIC_DROP", "The non-stance hip drops below the stance hip.", "5 to 10 degrees is the initial mild range; more than 10 degrees and persistent is major"),
+            ("SLB_PELVIC_HIKE", "The non-stance hip rises excessively.", "Score according to persistence and magnitude"),
+            ("SLB_LATERAL_TRUNK_LEAN", "The trunk leans toward or away from the stance limb.", "Score 2 when controlled; score 1 when major"),
+            ("SLB_MEDIOLATERAL_SWAY", "The pelvis or shoulder midpoint repeatedly moves side to side.", "Score 2 when persistent but controlled; score 1 when unrecovered"),
+            ("SLB_KNEE_MEDIAL", "The stance knee moves medial to the foot line.", "Score 2 when mild or moderate; score 1 when major"),
+            ("SLB_KNEE_LATERAL", "The stance knee moves excessively lateral to the foot line.", "Score 2 when mild or moderate; score 1 when major"),
+            ("SLB_FOOT_EDGE_LOADING", "Repeated loading on the medial or lateral foot border.", "Do not lower for a normal ankle strategy; score only when excessive or with control loss"),
+            ("SLB_ARM_STRATEGY", "Large repeated arm movements are used to prevent balance loss.", "Score 2 when repeated; score 1 when unable to recover"),
+        ],
         "scoring": """
-**Score 3 (Optimal):**
-- Holds ≥20 seconds on EACH leg with minimal sway
-- Trunk upright on both sides
-- NO hip drop >10° on either side (pelvis stays level)
-- Symmetrical performance between legs
-
-**Score 2 (Compensated):**
-- Holds 10-19 seconds on one or both legs
-- Mild sway or compensation
-- Minor hip drop (5-10°) acceptable
-- Minor asymmetry between sides
-
-**Score 1 (Dysfunctional):**
-- Holds <10 seconds on one or both legs
-- Frequent wobble or corrections
-- Touches down or loses balance
-- Significant hip drop (>10°)
-- Significant asymmetry between legs
-
-**Score 0 (Pain):**
-- Pain reported
-
-ASYMMETRY FLAG: If one leg holds significantly longer (>5 sec difference) or shows notably worse hip drop, flag this in your assessment.
+3: Clean hold of at least 20 seconds with only minimal controlled sway, generally upright trunk,
+   pelvic drop or hike below approximately 10 degrees, stable knee-to-foot alignment, full-foot
+   contact, no touchdown or repositioning.
+2: Clean hold of 10 to 19 seconds, or 20 seconds with persistent mild or moderate sway, 5 to 10
+   degrees of pelvic drop or hike, mild trunk lean, mild knee deviation, intermittent heel or
+   toe rise, or moderate arm recovery.
+1: Clean hold under 10 seconds, or a touchdown, hop, slide, persistent pelvic deviation over
+   approximately 10 degrees, major trunk lean, major knee displacement, frequent uncontrolled
+   wobbling, or an unrecovered balance reaction.
+0-NP (zero_reason "unable"): cannot safely assume single-leg stance or lift the non-stance foot.
 """,
-        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration", "symmetry", "leftLeg", "rightLeg", "overall"]
+        "observations_keys": ["stability", "hipDrop", "trunkPosition", "duration", "overall"],
     },
-    
+
     "inline_lunge": {
-        "name": "In-Line Lunge (Both Legs)",
+        "name": "In-Line Lunge",
         "category": "lower_fms",
-        "focus_areas": """
-Analyze BOTH legs - you will see 4 views:
-1. Front view - Left leg forward
-2. Left side view - Left leg forward
-3. Front view - Right leg forward
-4. Right side view - Right leg forward
+        "mode": "reps",
+        "views": "Frontal and sagittal recordings of the same three repetitions.",
+        "focus": """
+This recording is ONE lead leg (named in the exercise title). Analyse three repetitions, score
+each 0-3 and report them in rep_scores; the side score is the median.
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE measurements:
-- **left_knee** and **right_knee**: Angle tracking during lunge
-- **left_hip** and **right_hip**: Hip angles for balance assessment
-- Use knee angle data to assess depth and tracking
-
-For each leg forward, CAREFULLY assess:
-1. **Trunk position** - MUST be upright throughout the movement
-2. **Front heel contact** - MUST stay flat on ground (heel lift = compensation)
-3. **Back knee position** - Should touch floor JUST BEHIND the front heel (not beside it)
-4. **Knee tracking** - Use knee angle data to detect valgus (inward) or varus (outward)
-5. **Balance & control** - No wobble, no stepping off the line
-6. **Line alignment** - Feet must stay on the imaginary line (heel-to-toe alignment)
-
-CRITICAL CHECKPOINTS:
-- From SIDE VIEW: Check trunk angle (should be vertical), front heel contact, back knee position
-- From FRONT VIEW: Check knee tracking (valgus/varus), balance, line alignment
-
-IMPORTANT: Compare LEFT vs RIGHT leg forward performance and note any asymmetries.
+Sagittal view (use for): depth target (back knee to the floor immediately behind the front
+heel), trunk lean, front-heel contact, lumbopelvic position, control. Frontal view (use for):
+knee-to-foot tracking, pelvic and trunk deviation, step off the line, frontal sway. An initial
+stride that does not match the prescribed setup invalidates that repetition rather than
+lowering the score: tag LUNGE_INCORRECT_STRIDE and exclude it from rep_scores.
 """,
+        "tags": [
+            ("LUNGE_DEPTH_LIMITED", "The back knee does not descend to the target immediately behind the front heel.", "Score 2 when inconsistent; score 1 when the target is repeatedly not achieved"),
+            ("LUNGE_FORWARD_TRUNK_LEAN", "The trunk inclines substantially forward instead of remaining relatively upright.", "Score 2 when mild or moderate; score 1 when major"),
+            ("LUNGE_LUMBOPELVIC_FLEXION", "Gross lumbar rounding or posterior pelvic rotation occurs.", "Score according to persistence and magnitude"),
+            ("LUNGE_LUMBOPELVIC_EXTENSION", "Excessive lumbar arching or rib flare occurs.", "Score according to persistence and magnitude"),
+            ("LUNGE_FRONT_HEEL_RISE", "The front heel loses contact during descent or ascent.", "Score 2 when intermittent; score 1 when major or persistent"),
+            ("LUNGE_BACK_FOOT_CONTACT_LOSS", "The back foot shifts, rolls, or loses required contact.", "Score 2 when controlled; score 1 when support is lost"),
+            ("LUNGE_INCORRECT_STRIDE", "The initial spacing does not match the prescribed setup.", "Invalidate the repetition and request setup correction"),
+            ("LUNGE_UNCONTROLLED_DESCENT", "The athlete drops rapidly, impacts the floor, or cannot reverse under control.", "Score 2 when task remains complete; score 1 when control is lost"),
+            ("LUNGE_BALANCE_LOSS", "The athlete steps, hops, uses support, or cannot return to the start.", "Immediate major event and maximum score of 1"),
+            ("LUNGE_FRONT_KNEE_MEDIAL", "The front knee moves medial to the front-foot line.", "Score 2 when mild or moderate; score 1 when major"),
+            ("LUNGE_FRONT_KNEE_LATERAL", "The front knee moves excessively lateral to the foot line.", "Score 2 when mild or moderate; score 1 when major"),
+            ("LUNGE_REAR_KNEE_DEVIATION", "The rear knee moves clearly inside or outside the intended line.", "Score according to persistence and magnitude"),
+            ("LUNGE_LATERAL_TRUNK_LEAN", "The shoulder midpoint shifts laterally relative to the pelvis.", "Score 2 when controlled; score 1 when major"),
+            ("LUNGE_PELVIC_DROP_HIKE", "The pelvis becomes visibly unlevel.", "Score 2 when mild or moderate; score 1 when major"),
+            ("LUNGE_GROSS_TRUNK_ROTATION", "The shoulders and pelvis visibly rotate away from the intended line.", "Score 2 when clear and repeated; score 1 when major"),
+            ("LUNGE_STEP_OFF_LINE", "Either foot moves off the designated line.", "Immediate major event when the base of support changes"),
+            ("LUNGE_FOOT_ROTATION", "Either foot turns substantially inward or outward.", "Score 2 when repeated; score 1 when it becomes a major reposition"),
+            ("LUNGE_FRONTAL_SWAY", "The trunk or pelvis repeatedly oscillates side to side.", "Score 2 when controlled; score 1 when unrecovered"),
+        ],
         "scoring": """
-**Score 3 (Optimal):**
-- Trunk upright throughout on BOTH sides
-- Front heel stays FLAT on both legs
-- Back knee touches floor JUST BEHIND front heel
-- NO wobble on either side
-- Front knee tracks directly over foot (no valgus/varus)
-- Symmetrical performance between legs
-
-**Score 2 (Compensated):**
-- Minor trunk lean (<15°) on one or both sides
-- Slight heel lift
-- Mild valgus/varus drift (<10°)
-- Minor loss of contact with dowel (if used)
-- Minor asymmetry between legs
-
-**Score 1 (Dysfunctional):**
-- Cannot complete lunge under control
-- Loss of balance on one or both sides
-- Major trunk lean (>15°)
-- Steps off the line
-- Significant valgus/varus (>10°)
-- Significant asymmetry between legs
-
-**Score 0 (Pain):**
-- Reports pain during lunge
-
-ASYMMETRY FLAG: Note if one side shows significantly worse performance (more compensation, less control).
+3: At least two of three controlled repetitions; trunk upright; front heel grounded; back knee
+   reaches the target behind the front heel; knees track with the feet; pelvis controlled; feet
+   stay on the line; no gross rotation, stepping, or balance loss.
+2: Completes the movement with persistent mild or moderate trunk lean, intermittent heel rise,
+   mild knee deviation, pelvic drop or rotation, frontal sway, minor foot rotation, slight line
+   deviation, inconsistent depth target, or reduced but adequate control.
+1: Cannot complete a controlled repetition, repeatedly misses the depth target, major heel rise
+   or knee deviation, steps off the line, repositions a foot, major trunk or pelvic deviation,
+   repeated balance loss, or cannot return under control.
+0-NP (zero_reason "unable"): cannot safely assume the in-line start position or initiate the lunge.
 """,
-        "observations_keys": ["alignment", "kneeTracking", "balance", "trunkPosition", "symmetry", "leftLeg", "rightLeg", "overall"]
+        "observations_keys": ["alignment", "kneeTracking", "balance", "trunkPosition", "overall"],
     },
-    
+
     "plank": {
-        "name": "Plank",
-        "category": "upper_fms",
-        "focus_areas": """
-Analyze the plank hold from SIDE VIEW:
+        "name": "Forward Plank",
+        "category": "shared",
+        "mode": "hold",
+        "hold_seconds": 30,
+        "views": "Sagittal (side-facing) recording is required. A frontal recording is optional and only adds symmetry tags.",
+        "focus": """
+Score the plank from the side-facing sagittal recording only. If the only recording is
+front-facing, or the shoulders, elbows, hips, knees, ankles and feet are not all visible, set
+rateable to false ("sagittal side view required") and leave score null.
 
-## FOCUS: CONSISTENT HOLD
-The main goal is to assess if the person can HOLD a plank position consistently.
-Minor adjustments and small movements are NORMAL and should NOT be penalized.
-
-## WHAT TO LOOK FOR
-1. **Consistent hold** - Did they maintain the position throughout?
-2. **General body line** - Roughly straight from head to heels (doesn't need to be perfect)
-3. **Major breakdowns** - Did they collapse, drop to knees, or completely lose position?
-
-## WHAT TO IGNORE (Don't penalize)
-- Small adjustments or shifts
-- Minor trembling (this is normal under load)
-- Slight head movements
-- Small hip position changes
-- Not having "perfect" form
-
-## DURATION ASSESSMENT
-- The video shows the ENTIRE recording (30 seconds)
-- If they maintain plank throughout = full 30 seconds
-- Only note duration if they visibly break/collapse mid-way
-- Trust the video over sensor data for duration
+Run a clean-hold clock from the start of the hold to the first support-point loss, knee
+flexion used to continue, base repositioning, or unrecovered major position loss; report it as
+clean_duration_seconds (cap at 30). Judge hip sag or pike against the shoulder-to-ankle line.
+This one plank score is shared by the Lower and Upper assessments.
 """,
+        "tags": [
+            ("PLANK_HIP_SAG", "Hip midpoint falls below the shoulder-to-ankle line.", "Score 2 when mild or intermittent; score 1 when major or persistent"),
+            ("PLANK_HIP_PIKE", "Hip midpoint rises substantially above the shoulder-to-ankle line.", "Score 2 when mild or intermittent; score 1 when major or persistent"),
+            ("PLANK_LUMBAR_EXTENSION", "Visible lumbar arching with anterior pelvic tilt.", "Score according to persistence and magnitude"),
+            ("PLANK_LUMBAR_FLEXION", "Lumbar curve moves into marked flexion or posterior pelvic tilt.", "Score according to persistence and magnitude"),
+            ("PLANK_TRUNK_FLEXION", "Upper-back rounding or loss of the straight trunk position.", "Score according to persistence and magnitude"),
+            ("PLANK_THORACIC_FLEXION", "Thoracic kyphosis increases from the starting position.", "Moderate caps at 2; major at 1"),
+            ("PLANK_THORACIC_COLLAPSE", "Thorax sinks relative to the shoulder girdle.", "Major finding may cap at 1"),
+            ("PLANK_FORWARD_BACKWARD_SHIFT", "Shoulders move substantially forward or backward relative to the elbows.", "Score 2 when repeated; score 1 when support or posture is lost"),
+            ("PLANK_REPEATED_SAGITTAL_SWAY", "Trunk or pelvis repeatedly oscillates forward, backward or vertically.", "Repeated caps at 2; major at 1"),
+            ("PLANK_ELBOW_POSITION", "Elbows are not approximately beneath the shoulders.", "Setup error; score only if it persists after setup correction"),
+            ("PLANK_FORWARD_HEAD", "Head moves anterior to the trunk line.", "Secondary; persistent finding may cap at 2"),
+            ("PLANK_CERVICAL_EXTENSION", "Chin lifts beyond the starting alignment.", "Secondary quality flag"),
+            ("PLANK_CERVICAL_FLEXION", "Head drops below the trunk reference line.", "Secondary quality flag"),
+            ("PLANK_KNEE_FLEXION", "One or both knees bend to continue the hold.", "Score 1 when used persistently to maintain the test"),
+            ("PLANK_BASE_REPOSITIONING", "Elbow, forearm or foot changes position.", "Major event; cap at 1 when used to continue"),
+            ("PLANK_CONTACT_LOSS", "A forearm, toe, or other required support point loses contact.", "Immediate major event and end of clean-hold time"),
+            ("PLANK_EARLY_TERMINATION", "The athlete stops before the 30-second target.", "Score according to clean-hold duration"),
+            ("PLANK_SHOULDER_ASYMMETRY", "(frontal only) One shoulder remains visibly higher than the other.", "Coach observation; lower score only when persistent and meaningful"),
+            ("PLANK_PELVIC_OBLIQUITY", "(frontal only) One hip remains higher than the other.", "Coach observation; lower score according to severity"),
+            ("PLANK_LATERAL_SHIFT", "(frontal only) Trunk or pelvic midpoint shifts laterally.", "Coach observation; lower score according to severity"),
+            ("PLANK_SUPPORT_ASYMMETRY", "(frontal only) Elbows, forearms, knees, or feet show unequal support placement.", "Setup correction or coach observation"),
+        ],
         "scoring": """
-**Score 3 (Optimal):**
-- Holds consistently for the FULL 30 seconds
-- Maintains general straight body line
-- Minor adjustments are fine
-- No major collapse or hip drop to the floor
-
-**Score 2 (Acceptable):**
-- Holds 20-29 seconds before needing to stop
-- OR holds full duration with noticeable but acceptable form variations
-- Some hip sag or pike but still maintaining position
-- Generally holds the position
-
-**Score 1 (Dysfunctional):**
-- Holds <20 seconds before breaking position
-- Significant hip collapse (hips nearly touching ground)
-- Cannot maintain any consistent hold
-- Has to restart or take breaks
-
-**Score 0 (Pain):**
-- Pain reported
-- Cannot get into plank position at all
-
-BE GENEROUS: If the person is clearly trying and maintaining a plank position for the full time, even with imperfect form, lean toward Score 3 or 2.
+3: Maintains the position for 30 seconds; shoulders, hips, knees and ankles remain approximately
+   aligned; no meaningful hip sag or pike; spine and pelvis generally neutral; elbows beneath
+   the shoulders; knees extended; all support points grounded.
+2: Clean position for 20 to 29 seconds, or 30 seconds with mild or intermittent hip sag, piking,
+   lumbar extension, trunk flexion, forward-backward shift, elbow-position deviation, or
+   correctable asymmetry.
+1: Clean hold under 20 seconds, or persistent major hip sag or piking, major spinal deviation,
+   knee flexion used to continue, support-point loss, repeated position loss, or need for
+   assistance.
+0-NP (zero_reason "unable"): cannot safely assume the plank start position or lift into the test.
 """,
-        "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "stability", "overall"]
+        "observations_keys": ["spineAlignment", "hipPosition", "holdTime", "stability", "overall"],
     },
-    
+
     "shoulder_mobility": {
-        "name": "Shoulder Mobility (IR/ER)",
+        "name": "Shoulder Mobility Functional Combined Reach",
         "category": "upper_fms",
-        "focus_areas": """
-Analyze shoulder internal/external rotation from BACK VIEW:
+        "mode": "shoulder",
+        "views": "Posterior frontal view: the athlete stands with the back to the camera.",
+        "focus": """
+This recording is ONE arm configuration (the arm reaching over the top is named in the exercise
+title; the other arm reaches up behind the lower back). The test combines shoulder rotation with
+abduction, adduction, extension, scapular movement, elbow motion, wrist position and trunk
+control. Do not label it as isolated internal or external rotation.
 
-## USING QUICKPOSE SENSOR DATA
-The pose detection provides ACCURATE shoulder angle measurements:
-- **left_shoulder**: ROM range (min and max angles during movement)
-- **right_shoulder**: ROM range (min and max angles during movement)
-
-These angles help quantify the range of motion achieved.
-TRUST this data for ROM assessment.
-
-YOUR visual analysis should assess:
-1. **Fist distance** - How close the fists get to each other
-2. **Hand position** - Top hand reaching over shoulder, bottom hand reaching behind back
-3. **Compensations** - Trunk rotation, shoulder hiking, elbow position
-4. **Symmetry** - Compare if both sides tested
-5. **Range achieved** - Estimate in hand-lengths apart
-
-Use the shoulder angle data to inform your assessment of ROM achieved.
+Hand-length reference: the distance from the distal wrist crease to the tip of the third digit.
+Estimate the minimum fist-to-fist distance divided by that hand length and report it as
+normalized_hand_gap. Both hands must stay as closed fists; an open hand, extended fingers or a
+hand flattened against the back invalidates the trial (tag SM_HAND_POSITION_CHANGE and set
+rateable false with reason "hand opened; repeat trial"). Required visibility: both fists,
+wrists, shoulders, elbows, scapular borders, spinal midline and feet.
 """,
+        "tags": [
+            ("SM_EXCESS_HAND_GAP", "Minimum fist-to-fist distance exceeds the applicable hand-length band.", "Score by normalized gap"),
+            ("SM_HAND_WALKING", "Fingers or hands make repeated movements after the initial reach.", "Repeat once; persistent finding caps at 1"),
+            ("SM_MULTIPLE_REACH_ATTEMPTS", "More than one reach is used to obtain the endpoint.", "Cap at 2; cap at 1 when repeated and substantial"),
+            ("SM_TRUNK_ROTATION", "Shoulder line or spinal midline rotates toward one side.", "Moderate caps at 2; major caps at 1"),
+            ("SM_LATERAL_TRUNK_FLEXION", "Trunk midline bends toward either hand.", "Moderate caps at 2; major caps at 1"),
+            ("SM_SHOULDER_ELEVATION", "One or both shoulders move toward the ears during the reach.", "Persistent finding caps at 2"),
+            ("SM_UNEVEN_SHOULDER_HEIGHT", "Persistent left-right difference in acromion height.", "Coach flag; lower score by severity"),
+            ("SM_SCAPULAR_BORDER_PROMINENCE", "Medial border or inferior angle becomes visibly prominent.", "Review-only; no automatic deduction"),
+            ("SM_SCAPULAR_MOTION_ASYMMETRY", "One scapula moves earlier or substantially differently.", "Review-only; no automatic deduction"),
+            ("SM_UPPER_ELBOW_FLARE", "Upper elbow moves substantially laterally.", "Secondary quality flag"),
+            ("SM_LOWER_ELBOW_FLARE", "Lower elbow separates substantially from the torso.", "Secondary quality flag"),
+            ("SM_WRIST_COMPENSATION", "Marked wrist position reduces the apparent fist distance.", "Repeat or cap at 2; major caps at 1"),
+            ("SM_HAND_POSITION_CHANGE", "Fist opens, fingers extend, or hand flattens against the back.", "Measurement invalid for that trial; repeat"),
+            ("SM_INCOMPLETE_HOLD", "Final position cannot be maintained for the capture interval.", "Cap at 1 when persistent"),
+            ("SM_FOOT_REPOSITIONING", "Athlete steps or changes foot position.", "Immediate major event; cap at 1"),
+        ],
         "scoring": """
-**Score 3 (Optimal):**
-- Fists touch (within 0 hand lengths)
-
-**Score 2 (Acceptable):**
-- Fists within 1 hand length (but not touching)
-
-**Score 1 (Dysfunctional):**
-- Fists farther apart than 1.5 hand lengths
-
-**Score 0 (Pain):**
-- Pain during attempt
+3: Trial completed; normalized hand gap no more than 1.0 hand length; one smooth reach;
+   standardised fists; no hand walking or persistent meaningful compensation.
+2: Gap greater than 1.0 but no more than 1.5 hand lengths; or a 3-level distance achieved with a
+   persistent mild or moderate compensation.
+1: Gap exceeds 1.5 hand lengths; or repeated attempts, persistent hand walking, major trunk
+   substitution, altered hand position, or inability to hold the endpoint.
+0-NP (zero_reason "unable"): cannot safely position either arm behind the back.
 """,
-        "observations_keys": ["fistDistance", "shoulderRange", "symmetry", "overall"]
+        "observations_keys": ["fistDistance", "shoulderRange", "overall"],
     },
-    
+
     "pushups": {
-        "name": "Push-Ups",
+        "name": "Push-Up",
         "category": "upper_fms",
-        "focus_areas": """
-Analyze push-ups from SIDE VIEW:
+        "mode": "pushup",
+        "views": "Sagittal side view of one continuous set.",
+        "focus": """
+Count VALID repetitions only and report valid_rep_count, plus the total attempted as
+attempted_rep_count. The variation (standard or knee) and the scoring profile (men or women)
+were selected by the athlete before recording and are supplied below. Never infer them from the
+video; if the video clearly shows a different variation than the one selected, say so in
+coach_observation but still count against the selected variation.
 
-## FOCUS: COUNT REPS
-The main goal is to COUNT how many push-ups the person completes.
-Side view lets you see depth and body position clearly.
+A valid standard repetition: hands and feet stay in their original support positions and knees
+stay off the floor; shoulder, trunk, pelvis, knees and ankles move as one unit without major
+sag, pike or spinal lag; the athlete reaches the bottom position and returns to full lockout at
+the top; no chest rest, rebound, prolonged pause or repositioning.
 
-## WHAT TO COUNT
-1. **Rep count** - Count push-ups where chest lowers and arms extend
-2. **Type** - Note if full push-ups (toes) or knee push-ups (knees on ground)
+A valid knee repetition: knees stay on the surface and shoulder, trunk, pelvis and knee form the
+alignment line; no hinging backward at the hips and the feet do not become an active support
+point; trunk and pelvis rise together through the bottom and top positions; hands and knees do
+not slide; no chest rest, rebound or prolonged pause.
 
-## FORM ASSESSMENT (Secondary)
-- Look for generally straight body line (neutral trunk)
-- Don't be too strict - minor form variations are acceptable
-- Focus more on REP COUNT than perfect form
-
-## COUNTING RULES
-- Count any rep where chest visibly lowers toward ground
-- Count any rep where arms extend back up
-- Be GENEROUS with counting - if it looks like a push-up, count it
-- Note if they switch from full to knee push-ups mid-way
-
-User will tap STOP when done - count all reps in the video.
+Three consecutive invalid repetitions terminate the set; stop counting there. Report every rep
+that was invalid with its rep_index on the tag that invalidated it. A sagittal view cannot
+reliably judge elbow flare, hand width, trunk rotation, lateral shift or scapular winging; do
+not report those.
 """,
+        "tags": [
+            ("PU_LUMBAR_EXTENSION", "Pelvis drops below the shoulder-to-ankle or shoulder-to-knee line with increased lumbar extension.", "Score-critical; moderate caps at 2, major at 1"),
+            ("PU_HIP_PIKE", "Pelvis rises above the applicable body line.", "Score-critical; moderate caps at 2, major at 1"),
+            ("PU_TRUNK_LAG", "Upper trunk initiates ascent while the pelvis remains low.", "Invalid repetition; persistent finding caps at 1"),
+            ("PU_HIP_LEAD", "Pelvis rises before the shoulders.", "Invalid repetition; persistent finding caps at 1"),
+            ("PU_BODY_NOT_UNIT", "Shoulder, trunk, pelvis and lower body do not move together.", "Invalid repetition"),
+            ("PU_INCOMPLETE_DEPTH", "Athlete reverses before the protocol-defined bottom position.", "Do not count repetition"),
+            ("PU_INCOMPLETE_LOCKOUT", "Elbow does not return to the protocol-defined top position.", "Do not count repetition"),
+            ("PU_FORWARD_HEAD", "Head translates anteriorly relative to the trunk.", "Secondary; persistent finding may cap at 2"),
+            ("PU_CERVICAL_EXTENSION", "Chin lifts and cervical extension increases.", "Secondary quality flag"),
+            ("PU_CERVICAL_FLEXION", "Head drops below the trunk reference line.", "Secondary quality flag"),
+            ("PU_THORACIC_FLEXION", "Upper-back rounding increases substantially.", "Moderate caps at 2; major at 1"),
+            ("PU_SHOULDER_ELEVATION", "Shoulder moves toward the ear under load.", "Secondary quality flag"),
+            ("PU_EXCESSIVE_FORWARD_SHIFT", "Shoulder translates substantially beyond the hand during descent.", "Lower score by severity"),
+            ("PU_HAND_REPOSITIONING", "Hand slides, rotates or lifts after the set begins.", "Invalid repetition; repeated event caps at 1"),
+            ("PU_FOOT_REPOSITIONING", "Foot slides or changes support position.", "Invalid repetition; repeated event caps at 1"),
+            ("PU_KNEE_CONTACT", "Knee contacts the floor during standard mode.", "Invalid standard repetition; offer knee pathway"),
+            ("PU_CHEST_REST", "Chest or abdomen unloads on the floor.", "Invalid repetition"),
+            ("PU_REBOUND", "Visible floor contact or momentum assists the reversal.", "Invalid repetition"),
+            ("PU_PAUSE_FAILURE", "Athlete stops mid-repetition or cannot return to the top.", "Invalid repetition; may end set"),
+            ("PU_TEMPO_BREAKDOWN", "Repetition duration increases substantially relative to earlier valid repetitions.", "Fatigue flag; score by valid count and form"),
+        ],
         "scoring": """
-**Score 3 - Full Push-Ups (Good Control):**
-- ≥15 reps (men) / ≥10 reps (women)
-- Full push-ups (on toes)
-- Neutral trunk generally maintained
-
-**Score 2 - Full Push-Ups (Limited Volume):**
-- 5-14 reps (men) / 3-9 reps (women)
-- Full push-ups performed
-- Form doesn't need to be perfect
-
-**Score 1 - Knee Push-Ups Only:**
-- ≥5 knee push-ups with reasonable control
-- Cannot perform full push-ups
-- Or fewer than 5 full push-ups
-
-**Score 0 - Unable / Pain:**
-- <5 knee push-ups total
-- Pain reported
-- Cannot perform push-ups
-
-DEFAULT: If gender unknown, use male thresholds.
-BE GENEROUS with rep counting - focus on effort and reps completed.
+The base score is computed from valid_rep_count by the server using the selected variation and
+profile (standard: men 15+ = 3, 5-14 = 2, fewer = knee retest; women 10+ = 3, 3-9 = 2; knee:
+men 15+ = 2, 1-14 = 1; women 10+ = 2, 1-9 = 1; no valid rep = 0-NP). Quality modifiers then
+apply: persistent mild or moderate compensation caps at 2; major sag, pike, body-segment lag,
+repeated repositioning or repeated invalid repetitions cap at 1. Your job is the valid count,
+the tags and the observation; still fill in score with your best estimate.
 """,
-        "observations_keys": ["repCount", "bodyPosition", "depth", "control", "overall"]
-    }
-    # Step down tests removed per feedback
+        "observations_keys": ["repCount", "bodyPosition", "depth", "control", "overall"],
+    },
 }
 
 
@@ -1845,197 +1897,257 @@ BE GENEROUS with rep counting - focus on effort and reps completed.
 # PROMPT BUILDING
 # ============================================================
 
+def _fmt(val, decimals=0):
+    if val is None or val == 'N/A':
+        return 'N/A'
+    try:
+        return f"{float(val):.{decimals}f}"
+    except (ValueError, TypeError):
+        return 'N/A'
+
+
+def format_pose_data(view_types: List[str], pose_data_list: List[Dict]) -> str:
+    """On-device joint angles captured during recording, one block per view."""
+    if not pose_data_list:
+        return ""
+    text = "\n## ON-DEVICE POSE DATA (joint angles measured during recording)\n"
+    text += "Use these as sensor support for depth, hip level, hold time and range.\n"
+    for i, pose_data in enumerate(pose_data_list):
+        view_name = view_types[i] if i < len(view_types) else f"View {i+1}"
+        text += f"\n**{view_name.replace('_', ' ').title()}:**\n"
+        left_knee = pose_data.get('left_knee', {})
+        right_knee = pose_data.get('right_knee', {})
+        if left_knee or right_knee:
+            text += (f"- Left Knee: {_fmt(left_knee.get('min'))}° - {_fmt(left_knee.get('max'))}° "
+                     f"(deepest: {_fmt(left_knee.get('at_key_moment'))}° @ {_fmt(left_knee.get('time_at_key_moment'), 1)}s)\n"
+                     f"- Right Knee: {_fmt(right_knee.get('min'))}° - {_fmt(right_knee.get('max'))}° "
+                     f"(deepest: {_fmt(right_knee.get('at_key_moment'))}° @ {_fmt(right_knee.get('time_at_key_moment'), 1)}s)\n")
+        left_hip = pose_data.get('left_hip', {})
+        right_hip = pose_data.get('right_hip', {})
+        if left_hip or right_hip:
+            text += (f"- Left Hip: {_fmt(left_hip.get('min'))}° - {_fmt(left_hip.get('max'))}°\n"
+                     f"- Right Hip: {_fmt(right_hip.get('min'))}° - {_fmt(right_hip.get('max'))}°\n"
+                     f"- Hip level difference (max): {_fmt(pose_data.get('max_hip_angle_difference', 0), 1)}°\n")
+        left_shoulder = pose_data.get('left_shoulder', {})
+        right_shoulder = pose_data.get('right_shoulder', {})
+        if left_shoulder.get('min', 180) < 180 or right_shoulder.get('min', 180) < 180:
+            text += (f"- Left Shoulder ROM: {_fmt(left_shoulder.get('min'))}° - {_fmt(left_shoulder.get('max'))}°\n"
+                     f"- Right Shoulder ROM: {_fmt(right_shoulder.get('min'))}° - {_fmt(right_shoulder.get('max'))}°\n")
+        back_angle = pose_data.get('back_angle', {})
+        if back_angle.get('min', 180) < 180:
+            text += f"- Back/Spine Angle: {_fmt(back_angle.get('min'))}° - {_fmt(back_angle.get('max'))}°\n"
+        if pose_data.get('exercise_detected'):
+            text += (f"- Exercise position detected: count {pose_data.get('exercise_count', 0)}, "
+                     f"{_fmt(pose_data.get('exercise_position_percentage', 0))}% of frames in position, "
+                     f"estimated hold {_fmt(pose_data.get('estimated_hold_duration', 0), 1)}s\n")
+        detection_rate = pose_data.get('person_detection_rate', 0)
+        text += f"- Person detected in {_fmt(detection_rate * 100 if detection_rate else 0)}% of frames\n"
+    return text
+
+
 def build_exercise_prompt(
     exercise_type: str,
     exercise_name: str,
     view_types: List[str],
     pose_data_list: List[Dict],
-    scoring_criteria: Optional[Dict] = None,
-    side: Optional[str] = None
+    side: Optional[str] = None,
+    pushup_variation: Optional[str] = None,
+    scoring_profile: Optional[str] = None,
 ) -> str:
-    """Build exercise-specific analysis prompt."""
+    """Build the spec-driven analysis prompt for one exercise (or one side of it)."""
+    config = EXERCISE_CRITERIA.get(exercise_type, EXERCISE_CRITERIA["functional_squat"])
+    view_display = ', '.join(v.replace('_', ' ').title() for v in view_types)
+    tag_lines = '\n'.join(f"- {tag}: {obs} ({imp})" for tag, obs, imp in config["tags"])
+    obs_format = ',\n    '.join(f'"{k}": "<plain-language observation>"' for k in config["observations_keys"])
 
-    exercise_config = EXERCISE_PROMPTS.get(exercise_type, EXERCISE_PROMPTS["functional_squat"])
+    mode = config["mode"]
+    if mode == "reps":
+        mode_rules = "Report rep_scores as a list of three integers (fewer if a rep was invalidated). Leave clean_duration_seconds, valid_rep_count and normalized_hand_gap null."
+    elif mode == "hold":
+        mode_rules = f"Report clean_duration_seconds (0 to {config['hold_seconds']}). Leave rep_scores, valid_rep_count and normalized_hand_gap null."
+    elif mode == "shoulder":
+        mode_rules = "Report normalized_hand_gap (fist gap divided by hand length, 0.0 when fists touch). Leave rep_scores, clean_duration_seconds and valid_rep_count null."
+    else:
+        mode_rules = (f"Selected variation: {pushup_variation or 'standard'}. Selected scoring profile: {scoring_profile or 'men'}. "
+                      "Report valid_rep_count and attempted_rep_count. Leave rep_scores, clean_duration_seconds and normalized_hand_gap null.")
 
-    # If analyzing just one side, adjust the focus areas
-    if side and exercise_type in ["single_leg_balance", "inline_lunge"]:
-        side_upper = side.upper()
-        focus_override = f"""
-Analyze the {side_upper} SIDE ONLY - you will see 2 views:
-1. Front view - {side.capitalize()} leg {'standing' if exercise_type == 'single_leg_balance' else 'forward'}
-2. {side.capitalize()} side view - {side.capitalize()} leg {'standing' if exercise_type == 'single_leg_balance' else 'forward'}
+    side_note = f"\nThis request covers the {side.upper()} side / configuration only; score it on its own.\n" if side else ""
 
-For the {side_upper} side, assess:
-"""
-        if exercise_type == "single_leg_balance":
-            focus_override += """
-1. **Stability** - Amount of sway, wobble, or corrections
-2. **Hip drop** - Pelvis staying level vs dropping on unsupported side
-3. **Trunk position** - Upright vs leaning
-4. **Duration quality** - Ability to maintain position
-5. **Compensation strategies** - Arm waving, trunk rotation, excessive ankle movement
-"""
-        else:  # inline_lunge
-            focus_override += """
-1. **Trunk position** - Upright vs leaning
-2. **Front heel contact** - Stays flat or lifts
-3. **Knee tracking** - Front knee over foot, no valgus/varus
-4. **Back knee position** - Touches behind front heel
-5. **Balance & control** - Stability throughout, no stepping off line
-6. **Alignment** - Feet stay on the line
-"""
-        exercise_config = dict(exercise_config)
-        exercise_config["focus_areas"] = focus_override
-    
-    # Format view types for display
-    view_display = []
-    for v in view_types:
-        formatted = v.replace('_', ' ').title()
-        view_display.append(formatted)
-    
     prompt = f"""
-You are an expert movement analyst and physical therapist specializing in Functional Movement Screening (FMS).
-Analyze this {exercise_config['name']} assessment and provide a detailed evaluation.
+You are a movement analyst supporting a coach. Analyse this {config['name']} recording under the
+KYNETIQ Edge AI assessment criteria (rule version {RULE_VERSION}).
 
-## Exercise Being Assessed
+## Exercise
 **{exercise_name}**
+Required recordings: {config['views']}
+Camera views provided ({len(view_types)}): {view_display}
+{side_note}
+{SHARED_RULES}
 
-## Camera Views Provided ({len(view_types)} views)
-{', '.join(view_display)}
+## What to analyse
+{config['focus']}
 
-## Your Analysis Focus
-{exercise_config['focus_areas']}
+## Compensation tags for this exercise (use only these)
+{tag_lines}
 
-## Scoring Criteria
-{exercise_config['scoring'] if not scoring_criteria else format_custom_scoring(scoring_criteria)}
-"""
+## Scoring
+{config['scoring']}
+{mode_rules}
+{format_pose_data(view_types, pose_data_list)}
 
-    # Helper function to safely format numbers
-    def fmt(val, decimals=0):
-        if val is None or val == 'N/A':
-            return 'N/A'
-        try:
-            if decimals == 0:
-                return f"{float(val):.0f}"
-            else:
-                return f"{float(val):.{decimals}f}"
-        except (ValueError, TypeError):
-            return 'N/A'
-
-    # Add pose detection data if available
-    if pose_data_list:
-        prompt += "\n## POSE DETECTION DATA (from QuickPose SDK)\n"
-        prompt += "⚠️ TRUST THIS DATA - it is measured by sensors during recording.\n"
-        for i, pose_data in enumerate(pose_data_list):
-            view_name = view_types[i] if i < len(view_types) else f"View {i+1}"
-            prompt += f"""
-**{view_name.replace('_', ' ').title()}:**
-"""
-            # === Bilateral Knee Angles ===
-            left_knee = pose_data.get('left_knee', {})
-            right_knee = pose_data.get('right_knee', {})
-            if left_knee or right_knee:
-                prompt += f"""- Left Knee: {fmt(left_knee.get('min'))}° - {fmt(left_knee.get('max'))}° (deepest: {fmt(left_knee.get('at_key_moment'))}° @ {fmt(left_knee.get('time_at_key_moment'), 1)}s)
-- Right Knee: {fmt(right_knee.get('min'))}° - {fmt(right_knee.get('max'))}° (deepest: {fmt(right_knee.get('at_key_moment'))}° @ {fmt(right_knee.get('time_at_key_moment'), 1)}s)
-"""
-            else:
-                # Fallback to legacy fields
-                prompt += f"""- Min knee angle: {pose_data.get('min_knee_angle', 'N/A')}°
-- Max knee angle: {pose_data.get('max_knee_angle', 'N/A')}°
-"""
-
-            # === Hip Angles (for hip drop detection) ===
-            left_hip = pose_data.get('left_hip', {})
-            right_hip = pose_data.get('right_hip', {})
-            if left_hip or right_hip:
-                prompt += f"""- Left Hip: {fmt(left_hip.get('min'))}° - {fmt(left_hip.get('max'))}°
-- Right Hip: {fmt(right_hip.get('min'))}° - {fmt(right_hip.get('max'))}°
-- **HIP DROP DETECTED: {'✅ YES' if pose_data.get('hip_drop_detected') else '❌ NO'}** (max diff: {fmt(pose_data.get('max_hip_angle_difference', 0), 1)}°)
-"""
-
-            # === Shoulder Angles ===
-            left_shoulder = pose_data.get('left_shoulder', {})
-            right_shoulder = pose_data.get('right_shoulder', {})
-            if left_shoulder.get('min', 180) < 180 or right_shoulder.get('min', 180) < 180:
-                prompt += f"""- Left Shoulder ROM: {fmt(left_shoulder.get('min'))}° - {fmt(left_shoulder.get('max'))}°
-- Right Shoulder ROM: {fmt(right_shoulder.get('min'))}° - {fmt(right_shoulder.get('max'))}°
-"""
-
-            # === Back Angle (for plank) ===
-            back_angle = pose_data.get('back_angle', {})
-            if back_angle.get('min', 180) < 180:
-                prompt += f"""- Back/Spine Angle: {fmt(back_angle.get('min'))}° - {fmt(back_angle.get('max'))}° (current: {fmt(back_angle.get('current'))}°)
-"""
-
-            # === Exercise Detection ===
-            if pose_data.get('exercise_detected'):
-                prompt += f"""- **EXERCISE DETECTED: ✅ YES** (count: {pose_data.get('exercise_count', 0)}, {fmt(pose_data.get('exercise_position_percentage', 0))}% of frames in position)
-- **ESTIMATED HOLD DURATION: {fmt(pose_data.get('estimated_hold_duration', 0), 1)}s**
-"""
-
-            # === General Data ===
-            detection_rate = pose_data.get('person_detection_rate', 0)
-            prompt += f"""- Person detection: {fmt(detection_rate * 100 if detection_rate else 0)}%
-- Key moment at: {pose_data.get('time_at_deepest_point_seconds', 'N/A')}s
-"""
-
-    # Build observations keys
-    obs_keys = exercise_config.get('observations_keys', ['overall'])
-    obs_format = ',\n    '.join([f'"{k}": "<your assessment>"' for k in obs_keys])
-    
-    prompt += f"""
-
-## Required Response Format (JSON)
-
+## Required response format (JSON only)
 {{
-  "score": <0-3>,
-  "classification": "<Optimal|Compensated|Acceptable|Dysfunctional|Pain>",
+  "rateable": <true|false>,
+  "not_rateable_reason": <"short reason" or null>,
+  "score": <0, 1, 2, 3, or null when not rateable>,
+  "zero_reason": <"unable" or null>,
+  "rep_scores": <[int, ...] or null>,
+  "clean_duration_seconds": <number or null>,
+  "valid_rep_count": <integer or null>,
+  "attempted_rep_count": <integer or null>,
+  "normalized_hand_gap": <number or null>,
+  "compensation_tags": [
+    {{
+      "tag": "<TAG_FROM_LIST>",
+      "severity": "<transient|mild|moderate|major>",
+      "confidence": <0.00-1.00>,
+      "first_detected_time": <seconds from task start>,
+      "duration_seconds": <number>,
+      "rep_index": <1-3 or null>,
+      "observation": "<what was seen, e.g. 'Right knee moved medial to the foot line during two of three repetitions'>"
+    }}
+  ],
+  "coach_observation": "<2-3 plain-language sentences describing what was seen. No causes, no diagnoses.>",
   "observations": {{
     {obs_format}
   }},
-  "compensations_detected": [
-    "<specific compensation observed>",
-    "<another if any>"
-  ],
-  "strengths": [
-    "<what was done well>"
-  ],
-  "improvements": [
-    "<actionable suggestion>"
-  ],
-  "mobility_focus_areas": [
-    "<body area needing work>"
-  ],
-  "exercise_specific_data": {{
-    "touch_count": <integer or null>,
-    "hold_duration": <number in seconds or null>,
-    "fist_distance_hand_lengths": <number or null>
-  }},
-  "summary": "<2-3 sentences summarizing the assessment and justifying the score>"
+  "strengths": ["<what was done well>"],
+  "improvements": ["<actionable, non-diagnostic suggestion>"],
+  "summary": "<2-3 sentences justifying the score from the tags>"
 }}
 
-## CRITICAL RULES
-1. Score based on the specific criteria for {exercise_config['name']}
-2. Be specific about what you observe in each view
-3. If multiple views provided, synthesize observations from all views
-4. For bilateral exercises (balance, lunge), comment on symmetry between left and right
-5. Output ONLY valid JSON
-6. All numeric values in exercise_specific_data must be plain numbers (e.g., 0.6 not "0.6s")
-
-Respond with ONLY the JSON object.
+Rules for the JSON: output only the object; numbers are plain numbers; use only tags from the
+list; an empty compensation_tags list is correct when nothing meaningful was seen.
 """
-    
     return prompt
 
 
-def format_custom_scoring(scoring_criteria: Dict) -> str:
-    """Format custom scoring criteria from request."""
-    result = ""
-    for score, criteria in [("3", "score_3"), ("2", "score_2"), ("1", "score_1"), ("0", "score_0")]:
-        if criteria in scoring_criteria:
-            result += f"\n**Score {score}:**\n"
-            for c in scoring_criteria[criteria]:
-                result += f"- {c}\n"
+# ============================================================
+# DETERMINISTIC RULES
+# ============================================================
+
+PUSHUP_BANDS = {
+    # variation -> profile -> (threshold for top band, threshold for middle band)
+    "standard": {"men": (15, 5), "women": (10, 3)},
+    "knee": {"men": (15, 1), "women": (10, 1)},
+}
+
+
+def pushup_base_score(valid_reps: int, variation: str, profile: str) -> Tuple[int, Optional[str], bool]:
+    """Returns (score, zero_reason, knee_retest_offered) per the Upper FMS push-up tables."""
+    variation = variation if variation in PUSHUP_BANDS else "standard"
+    profile = profile if profile in ("men", "women") else "men"
+    top, mid = PUSHUP_BANDS[variation][profile]
+    if valid_reps <= 0:
+        return 0, "unable", variation == "standard"
+    if variation == "knee":
+        return (2 if valid_reps >= top else 1), None, False
+    if valid_reps >= top:
+        return 3, None, False
+    if valid_reps >= mid:
+        return 2, None, False
+    # Below the minimum standard band: scored 1, knee retest offered after rest
+    return 1, None, True
+
+
+def hold_cap(seconds: Optional[float], exercise_type: str) -> Optional[int]:
+    """Clean-hold duration bands for balance (20 s) and plank (30 s)."""
+    if seconds is None:
+        return None
+    if exercise_type == "single_leg_balance":
+        return 1 if seconds < 10 else (2 if seconds < 20 else 3)
+    if exercise_type == "plank":
+        return 1 if seconds < 20 else (2 if seconds < 30 else 3)
+    return None
+
+
+def hand_gap_cap(gap: Optional[float]) -> Optional[int]:
+    if gap is None:
+        return None
+    return 3 if gap <= 1.0 else (2 if gap <= 1.5 else 1)
+
+
+def severity_cap(tags: List[Dict]) -> int:
+    """Lowest score the reported tags allow (3 = no cap)."""
+    cap = 3
+    for t in tags:
+        name = t.get("tag", "")
+        if name in NON_SCORING_TAGS or name in INVALID_REP_TAGS:
+            continue
+        sev = "major" if name in ALWAYS_MAJOR_TAGS else t.get("severity")
+        if sev == "major":
+            cap = min(cap, 2 if name in SECONDARY_TAGS else 1)
+        elif sev == "moderate":
+            cap = min(cap, 2)
+    return cap
+
+
+def apply_rules(
+    result: Dict,
+    exercise_type: str,
+    reported_pain: bool = False,
+    pushup_variation: Optional[str] = None,
+    scoring_profile: Optional[str] = None,
+) -> Dict:
+    """Enforce the spec's deterministic parts on top of the model's judgement."""
+    tags = [t for t in (result.get("compensation_tags") or []) if isinstance(t, dict) and t.get("tag")]
+    for t in tags:
+        if t["tag"] in ALWAYS_MAJOR_TAGS:
+            t["severity"] = "major"
+    result["compensation_tags"] = tags
+    result["compensations_detected"] = [t.get("observation") or t["tag"] for t in tags]
+    result["rule_version"] = RULE_VERSION
+    result.setdefault("knee_retest_offered", False)
+
+    if reported_pain:
+        result.update(rateable=True, not_rateable_reason=None, score=0,
+                      zero_reason="pain", classification="Pain")
+        return result
+
+    if result.get("rateable") is False:
+        result.update(score=None, zero_reason=None, classification="Not Rateable",
+                      not_rateable_reason=result.get("not_rateable_reason") or "recording could not be evaluated")
+        return result
+    result["rateable"] = True
+    result["not_rateable_reason"] = None
+
+    score = result.get("score")
+    if score not in (0, 1, 2, 3):
+        score = 2
+
+    if exercise_type == "pushups" and isinstance(result.get("valid_rep_count"), (int, float)):
+        score, zero_reason, retest = pushup_base_score(
+            int(result["valid_rep_count"]), pushup_variation or "standard", scoring_profile or "men")
+        result["zero_reason"] = zero_reason
+        result["knee_retest_offered"] = retest
+    elif exercise_type == "pushups" and pushup_variation == "knee":
+        score = min(score, 2)
+
+    if score > 0:
+        for cap in (severity_cap(tags),
+                    hold_cap(result.get("clean_duration_seconds"), exercise_type),
+                    hand_gap_cap(result.get("normalized_hand_gap")) if exercise_type == "shoulder_mobility" else None):
+            if cap is not None:
+                score = min(score, cap)
+
+    result["score"] = score
+    if score == 0:
+        if result.get("zero_reason") != "unable":
+            result["zero_reason"] = "unable"
+        result["classification"] = "Unable"
+    else:
+        result["zero_reason"] = None
+        result["classification"] = {3: "Optimal", 2: "Compensated", 1: "Dysfunctional"}[score]
     return result
 
 
@@ -2050,92 +2162,64 @@ def analyze_exercise(
     view_types: List[str],
     pose_data_list: List[Dict],
     reported_pain: bool = False,
-    scoring_criteria: Optional[Dict] = None,
     side: Optional[str] = None,
-    mime_type: str = "video/mp4"
+    mime_type: str = "video/mp4",
+    pushup_variation: Optional[str] = None,
+    scoring_profile: Optional[str] = None,
 ) -> Dict:
     """Analyze exercise video(s) using Gemini with native video understanding."""
+    response_text = ""
     try:
-        model = genai.GenerativeModel(MODEL)
-
-        # Build prompt
         prompt = build_exercise_prompt(
-            exercise_type,
-            exercise_name,
-            view_types,
-            pose_data_list,
-            scoring_criteria,
-            side
+            exercise_type, exercise_name, view_types, pose_data_list,
+            side, pushup_variation, scoring_profile,
         )
-
         if reported_pain:
-            prompt += "\n\n⚠️ USER REPORTED PAIN: Score MUST be 0 regardless of movement quality."
+            prompt += "\n\nATHLETE REPORTED PAIN during this test. The score is 0-P regardless of movement quality; still report the tags you see."
 
-        # Build content with videos directly (no frame extraction needed)
-        content = [prompt]
-
+        contents = [prompt]
         for i, video_b64 in enumerate(videos_base64):
             view_label = view_types[i] if i < len(view_types) else f"view_{i+1}"
-            content.append(f"\n[Video {i+1}: {view_label.replace('_', ' ').title()}]")
-            content.append({
-                "mime_type": mime_type,
-                "data": video_b64
-            })
+            contents.append(f"\n[Video {i+1}: {view_label.replace('_', ' ').title()}]")
+            contents.append(genai.types.Part.from_bytes(data=base64.b64decode(video_b64), mime_type=mime_type))
 
         print(f"Sending {len(videos_base64)} video(s) to Gemini for analysis")
-
-        # Call Gemini with native video understanding
-        response = model.generate_content(content)
+        response = client.models.generate_content(model=MODEL, contents=contents)
         response_text = response.text.strip()
 
-        # Clean up response (extract JSON from markdown if needed)
         if '```' in response_text:
-            lines = response_text.split('\n')
-            json_lines = []
-            in_json = False
-            for line in lines:
+            json_lines, in_json = [], False
+            for line in response_text.split('\n'):
                 if '```json' in line:
                     in_json = True
                     continue
-                elif '```' in line and in_json:
+                if '```' in line and in_json:
                     in_json = False
                     continue
                 if in_json:
                     json_lines.append(line)
             if json_lines:
                 response_text = '\n'.join(json_lines)
-
         if not response_text.startswith('{'):
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}')
+            start_idx, end_idx = response_text.find('{'), response_text.rfind('}')
             if start_idx != -1 and end_idx != -1:
                 response_text = response_text[start_idx:end_idx + 1]
 
-        # Parse response
-        analysis_result = json.loads(response_text)
-
-        # Validate score
-        if analysis_result.get("score") not in [0, 1, 2, 3]:
-            analysis_result["score"] = 2
-
-        return {
-            "success": True,
-            "analysis": analysis_result
-        }
+        analysis_result = apply_rules(
+            json.loads(response_text), exercise_type, reported_pain, pushup_variation, scoring_profile)
+        analysis_result["model"] = MODEL
+        return {"success": True, "analysis": analysis_result}
 
     except json.JSONDecodeError as e:
         return {
             "success": False,
             "error": f"Failed to parse AI response: {str(e)}",
-            "raw_response": response_text[:1000] if 'response_text' in locals() else None
+            "raw_response": response_text[:1000] if response_text else None
         }
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 
 # ============================================================
@@ -2152,16 +2236,19 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "4.0-gemini-native-video",
-            "supported_exercises": list(EXERCISE_PROMPTS.keys()),
+            "version": "5.0-criteria-tags",
+            "rule_version": RULE_VERSION,
+            "supported_exercises": list(EXERCISE_CRITERIA.keys()),
             "timestamp": datetime.now().isoformat()
         })
     
     @app.get("/test-connection")
     def test_connection():
         try:
-            model = genai.GenerativeModel(MODEL)
-            response = model.generate_content("Say 'connected' and nothing else.")
+            response = client.models.generate_content(
+                model=MODEL,
+                contents="Say 'connected' and nothing else."
+            )
             return jsonify({
                 "success": True,
                 "connected": True,
@@ -2198,7 +2285,8 @@ def create_app():
                 { view 3 data },
                 { view 4 data }
             ],
-            "scoring_criteria": { optional custom criteria }
+            "pushup_variation": "standard" | "knee",
+            "scoring_profile": "men" | "women"
         }
         """
         try:
@@ -2221,8 +2309,9 @@ def create_app():
             view_types = data.get("view_types", ["front"])
             reported_pain = data.get("reported_pain", False)
             pose_data_list = data.get("pose_detection_data", [])
-            scoring_criteria = data.get("scoring_criteria")
             side = data.get("side")  # "left" or "right" for bilateral exercises
+            pushup_variation = data.get("pushup_variation")  # "standard" | "knee", selected by the athlete
+            scoring_profile = data.get("scoring_profile")    # "men" | "women", selected by the athlete
 
             # Ensure pose_data_list is a list
             if isinstance(pose_data_list, dict):
@@ -2242,8 +2331,9 @@ def create_app():
                 view_types=view_types,
                 pose_data_list=pose_data_list,
                 reported_pain=reported_pain,
-                scoring_criteria=scoring_criteria,
-                side=side
+                side=side,
+                pushup_variation=pushup_variation,
+                scoring_profile=scoring_profile,
             )
             
             if result["success"]:
@@ -2251,7 +2341,8 @@ def create_app():
                     "success": True,
                     "timestamp": datetime.now().isoformat(),
                     "result": result["analysis"],
-                    "exercise_type": exercise_type
+                    "exercise_type": exercise_type,
+                    "rule_version": RULE_VERSION,
                 }
                 if side:
                     response_data["side"] = side
@@ -2324,5 +2415,5 @@ app = create_app()
 if __name__ == "__main__":
     print("Starting FMS Analysis API v3.1...")
     print(f"Model: {MODEL}")
-    print(f"Supported exercises: {list(EXERCISE_PROMPTS.keys())}")
+    print(f"Supported exercises: {list(EXERCISE_CRITERIA.keys())}")
     app.run(host="0.0.0.0", port=8000, debug=True)
