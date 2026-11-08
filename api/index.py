@@ -2247,7 +2247,7 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "5.0-criteria-tags",
+            "version": "5.1-sensor-data",
             "rule_version": RULE_VERSION,
             "supported_exercises": list(EXERCISE_CRITERIA.keys()),
             "timestamp": datetime.now().isoformat()
