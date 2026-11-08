@@ -71,3 +71,8 @@ txt = m.format_pose_data(["left_side"], [{"left_elbow": {"min": 70, "max": 160},
 assert "Left Elbow: 70" in txt and "Trunk vs tibia difference: 4" in txt
 assert "Elbow" not in m.format_pose_data(["front"], [{}]) and "tibia" not in m.format_pose_data(["front"], [{}])
 print("sensor block ok")
+# Sensor fist gap in hand lengths, omitted when absent
+assert "1.20 hand lengths" in m.format_pose_data(["back_left_arm_up"], [{"normalized_hand_gap": 1.2}])
+assert "hand lengths" not in m.format_pose_data(["back_left_arm_up"], [{"normalized_hand_gap": None}])
+assert "fist gap in hand lengths" in m.build_exercise_prompt("shoulder_mobility", "Shoulder Mobility", ["back_left_arm_up"], [], None, None, None)
+print("hand gap ok")

@@ -1797,7 +1797,8 @@ control. Do not label it as isolated internal or external rotation.
 
 Hand-length reference: the distance from the distal wrist crease to the tip of the third digit.
 Estimate the minimum fist-to-fist distance divided by that hand length and report it as
-normalized_hand_gap. Both hands must stay as closed fists; an open hand, extended fingers or a
+normalized_hand_gap. When ON-DEVICE POSE DATA gives a fist gap in hand lengths, use that value as
+normalized_hand_gap instead of estimating. Both hands must stay as closed fists; an open hand, extended fingers or a
 hand flattened against the back invalidates the trial (tag SM_HAND_POSITION_CHANGE and set
 rateable false with reason "hand opened; repeat trial"). Required visibility: both fists,
 wrists, shoulders, elbows, scapular borders, spinal midline and feet.
@@ -1943,6 +1944,9 @@ def format_pose_data(view_types: List[str], pose_data_list: List[Dict]) -> str:
         tt = pose_data.get('trunk_tibia_difference', {})
         if tt.get('min', 180) < 180:
             text += f"- Trunk vs tibia difference: {_fmt(tt.get('min'))}° - {_fmt(tt.get('max'))}° (side views; near 0 = parallel)\n"
+        gap = pose_data.get('normalized_hand_gap')
+        if isinstance(gap, (int, float)):
+            text += f"- Fist gap (smallest during hold): {gap:.2f} hand lengths (wrist-to-wrist over wrist-to-middle-fingertip)\n"
         if pose_data.get('exercise_detected'):
             text += (f"- Exercise position detected: count {pose_data.get('exercise_count', 0)}, "
                      f"{_fmt(pose_data.get('exercise_position_percentage', 0))}% of frames in position, "
