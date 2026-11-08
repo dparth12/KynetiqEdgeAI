@@ -66,3 +66,8 @@ for ex, cfg in m.EXERCISE_CRITERIA.items():
     p = m.build_exercise_prompt(ex, cfg["name"], ["front"], [], None, "knee", "women")
     assert all(t in p for t, _, _ in cfg["tags"]) and m.RULE_VERSION in p
 print("rules ok:", m.RULE_VERSION)
+# Sensor block prints elbow and trunk/tibia only when measured
+txt = m.format_pose_data(["left_side"], [{"left_elbow": {"min": 70, "max": 160}, "trunk_tibia_difference": {"min": 4, "max": 12}}])
+assert "Left Elbow: 70" in txt and "Trunk vs tibia difference: 4" in txt
+assert "Elbow" not in m.format_pose_data(["front"], [{}]) and "tibia" not in m.format_pose_data(["front"], [{}])
+print("sensor block ok")

@@ -1936,6 +1936,13 @@ def format_pose_data(view_types: List[str], pose_data_list: List[Dict]) -> str:
         back_angle = pose_data.get('back_angle', {})
         if back_angle.get('min', 180) < 180:
             text += f"- Back/Spine Angle: {_fmt(back_angle.get('min'))}° - {_fmt(back_angle.get('max'))}°\n"
+        for label, key in (("Left Elbow", "left_elbow"), ("Right Elbow", "right_elbow")):
+            a = pose_data.get(key, {})
+            if a.get('min', 180) < 180:
+                text += f"- {label}: {_fmt(a.get('min'))}° - {_fmt(a.get('max'))}°\n"
+        tt = pose_data.get('trunk_tibia_difference', {})
+        if tt.get('min', 180) < 180:
+            text += f"- Trunk vs tibia difference: {_fmt(tt.get('min'))}° - {_fmt(tt.get('max'))}° (side views; near 0 = parallel)\n"
         if pose_data.get('exercise_detected'):
             text += (f"- Exercise position detected: count {pose_data.get('exercise_count', 0)}, "
                      f"{_fmt(pose_data.get('exercise_position_percentage', 0))}% of frames in position, "
