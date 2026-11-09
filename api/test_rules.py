@@ -76,3 +76,11 @@ assert "1.20 hand lengths" in m.format_pose_data(["back_left_arm_up"], [{"normal
 assert "hand lengths" not in m.format_pose_data(["back_left_arm_up"], [{"normalized_hand_gap": None}])
 assert "fist gap in hand lengths" in m.build_exercise_prompt("shoulder_mobility", "Shoulder Mobility", ["back_left_arm_up"], [], None, None, None)
 print("hand gap ok")
+# Unmeasured joints (far side in a profile view) are left out instead of printing defaults
+txt = m.format_pose_data(["left_side"], [{"left_knee": {"min": 80, "max": 175}, "right_knee": {"min": 180, "max": 0},
+                                          "left_hip": {"min": 60, "max": 170}, "right_hip": {"min": 180, "max": 0},
+                                          "max_hip_angle_difference": 0}])
+assert "Left Knee: 80" in txt and "Right Knee" not in txt and "Left Hip: 60" in txt and "Right Hip" not in txt and "Pelvic tilt" not in txt, txt
+assert "Pelvic tilt, max (hip level difference): 7.5" in m.format_pose_data(["front"], [{"max_hip_angle_difference": 7.5}])
+assert "not listed was not measured" in m.format_pose_data(["front"], [{}])
+print("unmeasured joints omitted ok")

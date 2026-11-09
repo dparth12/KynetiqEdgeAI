@@ -1596,7 +1596,8 @@ sagittal view must not decide frontal-plane knee displacement by itself.
 Trunk lean is judged relative to the tibia, never as an absolute angle from vertical: use a
 trunk inclination exceeding tibial inclination by more than 10-15 degrees as the initial mild
 range. The on-device knee angles tell you depth: a minimum knee angle below about 90 degrees
-means the hip crease passed below the knee.
+means the hip crease passed below the knee. The trunk vs tibia difference, when present, is that
+trunk-to-tibia mismatch measured on the sagittal view.
 """,
         "tags": [
             ("SQUAT_DEPTH_LIMITED", "Hip crease does not reach approximately knee height or the femur remains above horizontal.", "Score 1 when the athlete cannot reach parallel across the scored repetitions"),
@@ -1645,7 +1646,8 @@ deviation. Report that time as clean_duration_seconds (cap at the task length).
 
 Sagittal view (use for): anterior-posterior sway, trunk lean, hip and knee strategy, heel or toe
 rise. Frontal view (use for): pelvic drop or hike, mediolateral sway, trunk lean, knee alignment,
-touchdown. Normal small ankle corrections are expected and are not faults.
+touchdown. Normal small ankle corrections are expected and are not faults. The on-device pelvic
+tilt is the pelvic drop or hike in degrees; read it against the 5 and 10 degree bands.
 """,
         "tags": [
             ("SLB_ANTERIOR_POSTERIOR_SWAY", "Repeated or large forward and backward displacement of the shoulders or pelvis over the stance foot.", "Score 2 when persistent but controlled; score 1 when unrecovered"),
@@ -1743,7 +1745,9 @@ rateable to false ("sagittal side view required") and leave score null.
 
 Run a clean-hold clock from the start of the hold to the first support-point loss, knee
 flexion used to continue, base repositioning, or unrecovered major position loss; report it as
-clean_duration_seconds (cap at 30). Judge hip sag or pike against the shoulder-to-ankle line.
+clean_duration_seconds (cap at 30). Judge hip sag or pike against the shoulder-to-ankle line; an
+on-device hip angle that stays near 180 degrees supports a straight line, a sustained lower value
+supports sag or pike.
 This one plank score is shared by the Lower and Upper assessments.
 """,
         "tags": [
@@ -1912,23 +1916,23 @@ def format_pose_data(view_types: List[str], pose_data_list: List[Dict]) -> str:
     if not pose_data_list:
         return ""
     text = "\n## ON-DEVICE POSE DATA (joint angles measured during recording)\n"
-    text += "Use these as sensor support for depth, hip level, hold time and range.\n"
+    text += ("Use these as sensor support for depth, hip level, hold time and range. A joint that is "
+             "not listed was not measured in that view (for example the far side of a profile recording).\n")
     for i, pose_data in enumerate(pose_data_list):
         view_name = view_types[i] if i < len(view_types) else f"View {i+1}"
         text += f"\n**{view_name.replace('_', ' ').title()}:**\n"
-        left_knee = pose_data.get('left_knee', {})
-        right_knee = pose_data.get('right_knee', {})
-        if left_knee or right_knee:
-            text += (f"- Left Knee: {_fmt(left_knee.get('min'))}° - {_fmt(left_knee.get('max'))}° "
-                     f"(deepest: {_fmt(left_knee.get('at_key_moment'))}° @ {_fmt(left_knee.get('time_at_key_moment'), 1)}s)\n"
-                     f"- Right Knee: {_fmt(right_knee.get('min'))}° - {_fmt(right_knee.get('max'))}° "
-                     f"(deepest: {_fmt(right_knee.get('at_key_moment'))}° @ {_fmt(right_knee.get('time_at_key_moment'), 1)}s)\n")
-        left_hip = pose_data.get('left_hip', {})
-        right_hip = pose_data.get('right_hip', {})
-        if left_hip or right_hip:
-            text += (f"- Left Hip: {_fmt(left_hip.get('min'))}° - {_fmt(left_hip.get('max'))}°\n"
-                     f"- Right Hip: {_fmt(right_hip.get('min'))}° - {_fmt(right_hip.get('max'))}°\n"
-                     f"- Hip level difference (max): {_fmt(pose_data.get('max_hip_angle_difference', 0), 1)}°\n")
+        for label, key in (("Left Knee", "left_knee"), ("Right Knee", "right_knee")):
+            a = pose_data.get(key, {})
+            if a.get('min', 180) < 180:
+                text += (f"- {label}: {_fmt(a.get('min'))}° - {_fmt(a.get('max'))}° "
+                         f"(deepest: {_fmt(a.get('at_key_moment'))}° @ {_fmt(a.get('time_at_key_moment'), 1)}s)\n")
+        for label, key in (("Left Hip", "left_hip"), ("Right Hip", "right_hip")):
+            a = pose_data.get(key, {})
+            if a.get('min', 180) < 180:
+                text += f"- {label}: {_fmt(a.get('min'))}° - {_fmt(a.get('max'))}°\n"
+        tilt = pose_data.get('max_hip_angle_difference')
+        if isinstance(tilt, (int, float)) and tilt > 0:
+            text += f"- Pelvic tilt, max (hip level difference): {_fmt(tilt, 1)}°\n"
         left_shoulder = pose_data.get('left_shoulder', {})
         right_shoulder = pose_data.get('right_shoulder', {})
         if left_shoulder.get('min', 180) < 180 or right_shoulder.get('min', 180) < 180:
@@ -2247,7 +2251,7 @@ def create_app():
             "ok": True,
             "model": MODEL,
             "service": "fms_analysis_api",
-            "version": "5.1-sensor-data",
+            "version": "5.2-sensor-data",
             "rule_version": RULE_VERSION,
             "supported_exercises": list(EXERCISE_CRITERIA.keys()),
             "timestamp": datetime.now().isoformat()
